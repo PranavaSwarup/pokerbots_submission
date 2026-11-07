@@ -192,39 +192,6 @@ def simulate_preflop_equity(hole_strs, n_sims=80):
 
 
 # ============================================================================
-# TRUE 3v3 FLOP EQUITY SIMULATION (Pre-Discard Flop Round)
-# ============================================================================
-
-def simulate_flop_3v3_equity(hole_ints, flop_ints, dead_ints, n_sims=150):
-    """
-    Simulates realistic 3v3 equity on the flop before discard:
-    Both players hold 3 cards, evaluate their best 2 on the flop,
-    and run out the remaining turn and river.
-    """
-    known = set(hole_ints) | set(flop_ints) | dead_ints
-    avail = [c for c in FULL_DECK_INTS if c not in known]
-    wins = 0.0
-
-    for _ in range(n_sims):
-        sampled = random.sample(avail, 5)
-        opp3 = sampled[:3]
-        runout = sampled[3:]
-        full_b = flop_ints + runout
-
-        my_best = max(combinations(hole_ints, 2), key=lambda p: eval_fast(list(p) + flop_ints))
-        opp_best = max(combinations(opp3, 2), key=lambda p: eval_fast(list(p) + flop_ints))
-
-        s1 = eval_fast(list(my_best) + full_b)
-        s2 = eval_fast(list(opp_best) + full_b)
-        if s1 > s2:
-            wins += 1.0
-        elif s1 == s2:
-            wins += 0.5
-
-    return wins / max(n_sims, 1)
-
-
-# ============================================================================
 # ACTION-AWARE EFFECTIVE HAND STRENGTH (EHS)
 # ============================================================================
 
@@ -534,6 +501,7 @@ class PokerBot:
         self.time_left_ms = msg.get("time_bank_ms", 30000)
         self.opp_model = OpponentModel()
         self.cumulative_net = 0
+        self.preflop_cache = {}
 
     def handle_new_hand(self, msg):
         self.hand_id = msg["hand_id"]
@@ -543,6 +511,8 @@ class PokerBot:
         self.opp_discard = None
         self.dead_cards = set()
         self.flop_cards = []
+        self.cached_discard = None
+        self.cached_flop_ehs = None
 
     def handle_discard_result(self, msg):
         self.my_discard = msg["my_discard"]
@@ -562,8 +532,12 @@ class PokerBot:
         board = list(req["board"])
         self.flop_cards = list(board)
 
-        n_samples = self.get_sim_budget(base=180)
+        if self.cached_discard and self.cached_discard in hole:
+            return {"type": "discard", "card": self.cached_discard}
+
+        n_samples = self.get_sim_budget(base=220)
         best_card, _ = select_best_discard_ehs(hole, board, self.dead_cards, n_samples)
+        self.cached_discard = best_card
         return {"type": "discard", "card": best_card}
 
     # ---- Action Request ----
@@ -590,8 +564,14 @@ class PokerBot:
         history = req.get("history", [])
         is_button = (self.seat == "button")
 
-        n_sims = self.get_sim_budget(base=80)
-        eq = simulate_preflop_equity(self.hole_cards, n_sims)
+        # Preflop Equity Simulation with Duplicate-Leg Caching
+        cache_key = tuple(sorted(self.hole_cards))
+        if cache_key in self.preflop_cache:
+            eq = self.preflop_cache[cache_key]
+        else:
+            n_sims = self.get_sim_budget(base=140)
+            eq = simulate_preflop_equity(self.hole_cards, n_sims)
+            self.preflop_cache[cache_key] = eq
 
         opp_raises = sum(
             1 for h in history
@@ -625,11 +605,21 @@ class PokerBot:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
             if is_button:
-                if "raise" in legal and random.random() < 0.80:
+                open_freq = 0.82
+                if self.opp_model.is_nit:
+                    open_freq = 0.98
+                elif self.opp_model.fold_to_raise_pct > 0.50:
+                    open_freq = 0.92
+                elif self.opp_model.is_station:
+                    open_freq = 0.72
+                if "raise" in legal and random.random() < open_freq:
                     return self.build_raise(req, 0.30)
                 return self.call_or_check(legal)
             else:
-                if "raise" in legal and random.random() < 0.45:
+                def_freq = 0.45
+                if self.opp_model.fold_to_raise_pct > 0.50:
+                    def_freq = 0.60
+                if "raise" in legal and random.random() < def_freq:
                     return self.build_raise(req, 0.35)
                 return self.call_or_check(legal)
 
@@ -641,7 +631,14 @@ class PokerBot:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
             if is_button:
-                if "raise" in legal and random.random() < 0.40:
+                open_freq = 0.42
+                if self.opp_model.is_nit:
+                    open_freq = 0.75
+                elif self.opp_model.fold_to_raise_pct > 0.50:
+                    open_freq = 0.60
+                elif self.opp_model.is_station:
+                    open_freq = 0.25
+                if "raise" in legal and random.random() < open_freq:
                     return self.build_raise(req, 0.25)
                 return self.call_or_check(legal)
             return self.call_or_check(legal)
@@ -677,10 +674,22 @@ class PokerBot:
 
         n_samples = self.get_sim_budget(base=220)
 
-        # Action-Aware & Realistic Flop vs Post-Discard Evaluation
+        # Unified Flop vs Turn/River Evaluation with Discard Caching
+        has_draw_flag = False
         if street == "flop" and len(hole_ints) == 3:
-            ehs = simulate_flop_3v3_equity(hole_ints, board_ints, dead_ints, n_sims=n_samples)
-            ppot = 0.30
+            if self.cached_flop_ehs is not None:
+                ehs = self.cached_flop_ehs
+                best_card = self.cached_discard
+            else:
+                best_card, ehs = select_best_discard_ehs(
+                    self.hole_cards, board, self.dead_cards, n_samples=n_samples
+                )
+                self.cached_discard = best_card
+                self.cached_flop_ehs = ehs
+            made_rank = max(eval_fast(list(p) + board_ints) for p in combinations(hole_ints, 2))
+            kept_ints = [c for c in hole_ints if c != CARD_TO_INT[best_card]]
+            has_draw_flag = has_draw(kept_ints + board_ints)
+            ppot = 0.40 if has_draw_flag else 0.15
         else:
             _, ppot, _, ehs = compute_ehs(
                 hole_ints, board_ints, dead_ints,
@@ -690,6 +699,10 @@ class PokerBot:
                 opp_is_maniac=self.opp_model.is_maniac,
                 n_samples=n_samples
             )
+            made_rank = eval_fast(hole_ints + board_ints) if len(board_ints) >= 3 else (0,)
+            has_draw_flag = (street == "turn") and has_draw(hole_ints + board_ints)
+
+        hand_cat = made_rank[0]
 
         if to_call > 0:
             pot_odds = to_call / (pot + to_call)
@@ -706,9 +719,6 @@ class PokerBot:
             if h.get("actor") == "opp" and h["action"] == "raise" and h["street"] == street
         )
 
-        made_rank = eval_fast(hole_ints + board_ints) if len(board_ints) >= 3 else (0,)
-        hand_cat = made_rank[0]
-
         # ====================================================================
         # DECISION MATRIX (Using Action-Conditioned EHS, MDF, and Pot Odds)
         # ====================================================================
@@ -719,7 +729,10 @@ class PokerBot:
             if to_call == 0 and self.seat == "big_blind" and self.opp_model.af > 1.2 and street in ("flop", "turn") and random.random() < 0.65:
                 return {"type": "action", "action": "check"}
             if "raise" in legal and raises_left > 0:
-                sizing = 0.85 if (street == "river" or spr < 2.0) else 0.65
+                if street == "river" and ehs >= 0.95 and self.opp_model.is_station:
+                    sizing = 1.00
+                else:
+                    sizing = 0.85 if (street == "river" or spr < 2.0) else 0.65
                 return self.build_raise(req, sizing)
             return self.call_or_check(legal)
 
@@ -740,7 +753,11 @@ class PokerBot:
                     if self.opp_model.is_station and "raise" in legal and raises_left > 0 and random.random() < 0.60:
                         return self.build_raise(req, 0.40)
                     return {"type": "action", "action": "check"}
-                if "raise" in legal and raises_left > 0 and random.random() < 0.60:
+                # Flop / Turn: bet for value & protection, higher in position or against folders
+                bet_freq = 0.75 if self.seat == "button" else 0.55
+                if self.opp_model.fold_to_raise_pct > 0.50:
+                    bet_freq = 0.85
+                if "raise" in legal and raises_left > 0 and random.random() < bet_freq:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
@@ -757,8 +774,14 @@ class PokerBot:
         # 4. DRAWING / SEMI-BLUFF (EHS >= 0.38)
         if ehs >= 0.38:
             if to_call == 0:
-                if "raise" in legal and street != "river" and ppot > 0.35 and random.random() < 0.40:
-                    return self.build_raise(req, 0.40)
+                # In position or with monster draws, C-bet semi-bluff
+                cbet_freq = 0.55 if self.seat == "button" else 0.30
+                if ppot > 0.30 or has_draw_flag:
+                    cbet_freq += 0.20
+                if self.opp_model.is_station:
+                    cbet_freq *= 0.5
+                if "raise" in legal and street != "river" and random.random() < cbet_freq:
+                    return self.build_raise(req, 0.38)
                 return {"type": "action", "action": "check"}
             else:
                 if street == "river" and to_call > 0:

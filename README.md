@@ -53,10 +53,10 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `random_bot.py`** | Stage 1 (400 hands) | **+8,030** | **Win (Capped +400)** | 6.02 s / 30.0 s | **0** |
-| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+8,902** | **Win (Capped +400)** | 10.53 s / 30.0 s | **0** |
-| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+13,146** | **Win (Capped +1000)** | 43.61 s / 75.0 s | **0** |
-| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±44** | **Near-Equilibrium** | 16.5 s / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 1 (400 hands) | **+6,654** | **Win (Capped +400)** | **3.75 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+10,674** | **Win (Capped +400)** | **6.97 s** / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+18,590** | **Win (Capped +1000)** | **32.04 s** / 75.0 s | **0** |
+| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±595** | **Near-Equilibrium** | **13.3 s** / 30.0 s | **0** |
 
 ---
 

@@ -543,7 +543,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
                         # Board is paired; opponent holds pure unmade air
                         w_act = bluff_freq
                     else:
-                        w_act = 0.80 if (pair_r >= max_board_rank and v_floor == 2) else 0.05
+                        w_act = 0.60 if opp_is_maniac else (0.80 if (pair_r >= max_board_rank and v_floor == 2) else 0.05)
                 else:
                     w_act = bluff_freq
             else:
@@ -596,12 +596,15 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         attempts += 1
         if opp_pool is not None and random.random() < 0.95:
             opp = random.sample(opp_pool, 2)
-            rem = [c for c in avail if c != opp[0] and c != opp[1]]
-            runout = random.sample(rem, board_needed)
+            while True:
+                r = random.choice(avail)
+                if r != opp[0] and r != opp[1]:
+                    runout = [r]
+                    break
         else:
-            sampled = random.sample(avail, 2 + board_needed)
+            sampled = random.sample(avail, 3)
             opp = sampled[:2]
-            runout = sampled[2:]
+            runout = [sampled[2]]
             if opp_is_rank_discarder and disc_rv != -1:
                 if min(opp[0] >> 2, opp[1] >> 2) < disc_rv:
                     if random.random() > 0.05:
@@ -867,10 +870,15 @@ class OpponentModel:
             return (self.opp_rank_discard_count / self.opp_discard_showdown_count) >= 0.80
         if self.opp_discard_showdown_count >= 2:
             return self.opp_rank_discard_count == self.opp_discard_showdown_count
-        if len(self.discard_ranks) >= 5:
+        if len(self.discard_ranks) >= 6:
             avg_r = sum(self.discard_ranks) / len(self.discard_ranks)
             max_r = max(self.discard_ranks)
-            if avg_r <= 3.6 and max_r <= 6:
+            if avg_r <= 5.8 and max_r <= 9:
+                return True
+        elif len(self.discard_ranks) >= 5:
+            avg_r = sum(self.discard_ranks) / len(self.discard_ranks)
+            max_r = max(self.discard_ranks)
+            if avg_r <= 5.5 and max_r <= 8:
                 return True
         return False
 
@@ -1114,6 +1122,8 @@ class PokerBot:
                 def_freq = 0.45
                 if self.opp_model.fold_to_raise_pct > 0.50:
                     def_freq = 0.60
+                elif self.opp_model.is_station:
+                    def_freq = 0.00
                 if "raise" in legal and self.roll("pf:bb_playable") < def_freq:
                     return self.build_raise(req, 0.35)
                 return self.call_or_check(legal)
@@ -1144,6 +1154,8 @@ class PokerBot:
                     if self.opp_model.fold_to_raise_pct > 0.50:
                         if self.roll("pf:bb_limp_iso_fold") < 0.85:
                             return self.build_raise(req, 0.30)
+                    elif self.opp_model.is_station:
+                        pass
                     elif eq >= 0.38 and self.roll("pf:bb_limp_iso") < 0.55:
                         return self.build_raise(req, 0.30)
                 return self.call_or_check(legal)
@@ -1205,7 +1217,17 @@ class PokerBot:
             h.get("actor") == "opp" and h.get("action") == "raise" and h.get("street") == "turn"
             for h in history
         )
-        checked_through_prev = (street == "turn" and not opp_bet_flop) or (street == "river" and not opp_bet_turn)
+        any_flop_bet = any(
+            h.get("action") == "raise" and h.get("street") == "flop"
+            for h in history
+        )
+        any_turn_bet = any(
+            h.get("action") == "raise" and h.get("street") == "turn"
+            for h in history
+        )
+        flop_checked_through = not any_flop_bet
+        turn_checked_through = not any_turn_bet
+        checked_through_prev = (street == "turn" and flop_checked_through) or (street == "river" and turn_checked_through)
 
         if street == "flop":
             # On the flop, both players hold 3 cards and see 3 community cards.
@@ -1326,7 +1348,7 @@ class PokerBot:
                     return {"type": "action", "action": "check"}
                 # Flop / Turn: bet for value & protection, higher in position or against folders
                 bet_freq = 0.75 if self.seat == "button" else 0.55
-                if street == "turn" and not opp_bet_flop:
+                if street == "turn" and flop_checked_through:
                     # Turn Probe Bet: punish opponent for checking behind on the flop
                     bet_freq = 0.88
                 if self.opp_model.is_nit:

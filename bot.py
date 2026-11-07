@@ -159,14 +159,39 @@ def eval_fast(c_ints):
 
 
 # ============================================================================
-# REALISTIC PREFLOP DISCARD HOLD'EM SIMULATION
+# REALISTIC PREFLOP DISCARD HOLD'EM SIMULATION & FLOP SCORE
 # ============================================================================
+
+def flop_score(c1, c2, flop_ints):
+    """
+    Evaluates 2-card holding strength on a 3-card flop with draw awareness.
+    Awards bonus categories for 4-flush (1.6), open-ended straight draws (1.2), and gutshots (0.8).
+    Returns (score_category, tiebreakers) for exact lexicographical comparison.
+    """
+    c_ints = [c1, c2] + flop_ints
+    s = eval_fast(c_ints)
+    suits = [0, 0, 0, 0]
+    mask = 0
+    for c in c_ints:
+        suits[c & 3] += 1
+        mask |= (1 << (c >> 2))
+
+    draw_bonus = 1.6 if (suits[0] >= 4 or suits[1] >= 4 or suits[2] >= 4 or suits[3] >= 4) else 0.0
+    for r in range(12, 3, -1):
+        if bin(mask & (0x1F << (r - 4))).count('1') == 4:
+            draw_bonus += 1.2
+            break
+    if draw_bonus < 2.0 and bin(mask & 0x100F).count('1') == 4:
+        draw_bonus += 0.8
+
+    return (s[0] + draw_bonus, s[1:])
+
 
 def simulate_preflop_equity(hole_strs, n_sims=80):
     """
     Simulates true Discard Hold'em preflop equity:
-    Both players hold 3 cards, see the 3-card flop, discard their worst card,
-    and showdown on the 5-card board.
+    Both players hold 3 cards, see the 3-card flop, discard their worst card
+    (using draw-aware flop potential), and showdown on the 5-card board.
     """
     hole_ints = [CARD_TO_INT[c] for c in hole_strs]
     avail = [c for c in FULL_DECK_INTS if c not in hole_ints]
@@ -178,8 +203,8 @@ def simulate_preflop_equity(hole_strs, n_sims=80):
         board = sampled[3:]
         flop = board[:3]
 
-        my_best = max(combinations(hole_ints, 2), key=lambda p: eval_fast(list(p) + flop))
-        opp_best = max(combinations(opp3, 2), key=lambda p: eval_fast(list(p) + flop))
+        my_best = max(combinations(hole_ints, 2), key=lambda p: flop_score(p[0], p[1], flop))
+        opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], flop))
 
         s1 = eval_fast(list(my_best) + board)
         s2 = eval_fast(list(opp_best) + board)
@@ -239,12 +264,16 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         bluff_freq = 0.40 if opp_is_maniac else (0.02 if opp_is_station else 0.15)
         max_board_rank = max(c >> 2 for c in board_ints)
 
+        alt_scores = None
+        if opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
+            alt_scores = {o: flop_score(o, opp_discard_int, flop_ints) for o in avail}
+
         for o1, o2 in combinations(avail, 2):
             w_disc = 1.0
-            if opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
-                s_kept = eval_fast([o1, o2] + flop_ints)
-                s_alt1 = eval_fast([o1, opp_discard_int] + flop_ints)
-                s_alt2 = eval_fast([o2, opp_discard_int] + flop_ints)
+            if alt_scores is not None:
+                s_kept = flop_score(o1, o2, flop_ints)
+                s_alt1 = alt_scores[o1]
+                s_alt2 = alt_scores[o2]
                 if s_kept >= s_alt1 and s_kept >= s_alt2:
                     w_disc = 1.0
                 elif s_kept >= min(s_alt1, s_alt2):
@@ -292,9 +321,9 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         runout = sampled[2:]
 
         if opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
-            s_kept = eval_fast(opp + flop_ints)
-            s_alt1 = eval_fast([opp[0], opp_discard_int] + flop_ints)
-            s_alt2 = eval_fast([opp[1], opp_discard_int] + flop_ints)
+            s_kept = flop_score(opp[0], opp[1], flop_ints)
+            s_alt1 = flop_score(opp[0], opp_discard_int, flop_ints)
+            s_alt2 = flop_score(opp[1], opp_discard_int, flop_ints)
             if s_kept < min(s_alt1, s_alt2) and random.random() > 0.10:
                 continue
 
@@ -358,7 +387,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, n_samples=220):
         runout = sampled[3:]
         full_b = board_ints + runout
 
-        opp_best = max(combinations(opp3, 2), key=lambda p: eval_fast(list(p) + board_ints))
+        opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], board_ints))
         s_opp = eval_fast(list(opp_best) + full_b)
 
         for i in range(3):
@@ -767,7 +796,9 @@ class PokerBot:
                 # Stack preservation against multiple raises
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
-                if ehs >= pot_odds + 0.04:
+                # Calibrated bluff-catching threshold
+                call_margin = 0.00 if self.opp_model.is_maniac else (0.07 if self.opp_model.is_station else 0.03)
+                if ehs >= pot_odds + call_margin:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
 

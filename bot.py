@@ -865,7 +865,14 @@ class OpponentModel:
     def is_rank_discarder(self):
         if self.opp_discard_showdown_count >= 3:
             return (self.opp_rank_discard_count / self.opp_discard_showdown_count) >= 0.80
-        return self.opp_discard_showdown_count >= 2 and self.opp_rank_discard_count == self.opp_discard_showdown_count
+        if self.opp_discard_showdown_count >= 2:
+            return self.opp_rank_discard_count == self.opp_discard_showdown_count
+        if len(self.discard_ranks) >= 5:
+            avg_r = sum(self.discard_ranks) / len(self.discard_ranks)
+            max_r = max(self.discard_ranks)
+            if avg_r <= 3.6 and max_r <= 6:
+                return True
+        return False
 
     @property
     def river_bluff_freq(self):
@@ -881,7 +888,7 @@ class OpponentModel:
 
     @property
     def is_station(self):
-        return self.hands_seen >= 10 and self.vpip_pct > 0.65 and self.af < 0.65 and self.fold_to_raise_pct < 0.35
+        return self.hands_seen >= 8 and self.vpip_pct > 0.60 and self.af < 0.85 and self.fold_to_raise_pct < 0.35
 
     @property
     def is_maniac(self):
@@ -931,7 +938,7 @@ class PokerBot:
 
     # ---- Dynamic Simulation Budget Controller ----
 
-    def get_sim_budget(self, base=180):
+    def get_sim_budget(self, base=150):
         avg_ms_left = max(10.0, (self.time_left_ms - 2500.0) / max(self.hands_remaining * 3, 1))
         if self.time_left_ms < 4000:
             return 40   # Emergency fast mode
@@ -1171,8 +1178,12 @@ class PokerBot:
         opp_disc_int = CARD_TO_INT[self.opp_discard] if self.opp_discard and self.opp_discard in CARD_TO_INT else None
         flop_ints = [CARD_TO_INT[c] for c in self.flop_cards] if self.flop_cards else board_ints[:3]
 
-        n_samples = self.get_sim_budget(base=220)
+        n_samples = self.get_sim_budget(base=150)
 
+        i_raised_preflop = any(
+            h.get("actor") == "me" and h.get("action") == "raise" and h.get("street") == "preflop"
+            for h in history
+        )
         opp_raises_preflop = sum(
             1 for h in history
             if h.get("actor") == "opp" and h["action"] == "raise" and h["street"] == "preflop"
@@ -1323,6 +1334,9 @@ class PokerBot:
                 # Stack preservation against multiple raises
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
+                # Triple-barrel defense: fold one pair to 3 streets of bets from non-maniacs
+                if street == "river" and opp_bet_flop and opp_bet_turn and to_call > 20 and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22 and hand_cat <= 1:
+                    return self.fold_or_check(legal)
                 # River polarized over-bet / all-in shove defense:
                 if street == "river" and (to_call > 50 or to_call > pot * 1.25) and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22:
                     v_floor = board_value_floor(board_ints)
@@ -1339,6 +1353,8 @@ class PokerBot:
             if to_call == 0:
                 # In position or with monster draws, C-bet semi-bluff
                 cbet_freq = 0.55 if self.seat == "button" else 0.30
+                if i_raised_preflop and self.seat == "button":
+                    cbet_freq = 0.72
                 if ppot > 0.25 or has_draw_flag:
                     cbet_freq += 0.25
                 if self.opp_model.is_nit:

@@ -229,15 +229,24 @@ def simulate_preflop_equity(hole_strs, n_sims=80):
     hole_ints = [CARD_TO_INT[c] for c in hole_strs]
     avail = [c for c in FULL_DECK_INTS if c not in hole_ints]
     wins = 0.0
+    h0, h1, h2 = hole_ints[0], hole_ints[1], hole_ints[2]
+    my_pairs = [(h0, h1), (h0, h2), (h1, h2)]
 
     for _ in range(n_sims):
         sampled = random.sample(avail, 8)
-        opp3 = sampled[:3]
+        o0, o1, o2 = sampled[0], sampled[1], sampled[2]
         board = sampled[3:]
         flop = board[:3]
 
-        my_best = max(combinations(hole_ints, 2), key=lambda p: flop_score(p[0], p[1], flop))
-        opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], flop))
+        s0 = flop_score(my_pairs[0][0], my_pairs[0][1], flop)
+        s1 = flop_score(my_pairs[1][0], my_pairs[1][1], flop)
+        s2 = flop_score(my_pairs[2][0], my_pairs[2][1], flop)
+        my_best = my_pairs[0] if s0 >= s1 and s0 >= s2 else (my_pairs[1] if s1 >= s2 else my_pairs[2])
+
+        so0 = flop_score(o0, o1, flop)
+        so1 = flop_score(o0, o2, flop)
+        so2 = flop_score(o1, o2, flop)
+        opp_best = (o0, o1) if so0 >= so1 and so0 >= so2 else ((o0, o2) if so1 >= so2 else (o1, o2))
 
         s1 = eval_fast(list(my_best) + board)
         s2 = eval_fast(list(opp_best) + board)
@@ -509,7 +518,8 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         if facing_bet and board_needed == 1 and not opp_is_maniac:
             if opp_curr[0] == 0:
                 draw_cat, _ = draw_potential(opp + board_ints)
-                if draw_cat not in ('combo', 'flush', 'oesd') and random.random() > (0.02 if opp_is_station else 0.15):
+                bluff_p = river_bluff_freq if river_bluff_freq is not None else (0.02 if opp_is_station else 0.15)
+                if draw_cat not in ('combo', 'flush', 'oesd') and random.random() > bluff_p:
                     continue
             elif max_b_suit >= 4 and opp_curr[0] < 5:
                 # 4-flush on turn board: non-flush holdings rarely bet
@@ -880,11 +890,11 @@ class PokerBot:
                     return self.build_raise(req, 0.35)
                 return self.call_or_check(legal)
 
-        # --- Marginal Hands (eq >= 0.35) ---
-        if eq >= 0.35:
+        # --- Marginal Hands (eq >= 0.30) ---
+        if eq >= 0.30:
             if opp_raises >= 1:
-                # Defend only against standard min-raises, fold to 3-bets
-                if to_call <= 3:
+                # Defend against standard min-raises when receiving favorable pot odds
+                if to_call <= 2 or (to_call <= 3 and eq >= pot_odds + 0.04):
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
             if is_button:
@@ -903,8 +913,6 @@ class PokerBot:
         # --- Trash Hands ---
         if "check" in legal:
             return {"type": "action", "action": "check"}
-        if to_call <= 1 and is_button:
-            return {"type": "action", "action": "call"}
         return {"type": "action", "action": "fold"}
 
     # ---- Postflop Logic ----

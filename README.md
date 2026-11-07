@@ -23,12 +23,13 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - Evaluates **Current Hand Strength ($HS$)**, **Positive Potential ($PPOT$)**, and **Negative Potential ($NPOT$)**.
 - Correctly values monster draws on wet boards (e.g., straight-flush draws are evaluated at ~68% equity instead of folding high-card 9).
 
-### 4. Action-Aware & Draw-Aware Bayesian Range Conditioning
-- The defining mechanic in Discard Hold'em is the **simultaneous exposed discard** after the flop (`opp_discard`).
-- Our bot conditions the opponent's candidate hand distribution on both public information sources:
-  - **Draw-Aware Discard Conditioning (`flop_score`)**: Accurately recognizes that keeping flush draws (+1.6) and open-ended straight draws (+1.2) is superior to keeping weak underpairs, assigning full Bayesian weight ($w_{\text{disc}} = 1.0$) to rational draw preservation on wet boards.
-  - **Action Conditioning**: Separates opponent's **Betting Range** (monsters, top pairs, high draws, bluffs) from their **Checking Range** (capped, marginal hands) based on real-time opponent aggression profiling ($AF$, $VPIP$).
-  - **River**: Exact exhaustive enumeration over all ~900 opponent holdings with Bayesian discard and action weights in **< 7 ms** via precomputed single-card candidate scoring.
+### 4. Joint Full-State Bayesian Range Conditioning ($w_{\text{total}} = w_{\text{pref}} \times w_{\text{disc}} \times w_{\text{act}}$)
+- The defining mechanic in Discard Hold'em is the **simultaneous exposed discard** after the flop (`opp_discard`), which uniquely reveals all 3 of the opponent's original preflop cards when combined with any candidate 2-card holding ($[o_1, o_2, D]$).
+- Our bot conditions the opponent's candidate hand distribution on the complete joint Bayesian posterior:
+  - **Preflop Action Conditioning ($w_{\text{pref}}$)**: Reconstructs the 3-card holding $[o_1, o_2, D]$ and evaluates its quality via `fast_preflop_score` (~0.1 µs). When opponent raised preflop, downweights uncoordinated rags ($w_{\text{pref}} = 0.15$); when opponent limped, downweights pocket monsters ($w_{\text{pref}} = 0.25$).
+  - **Draw-Aware & Rank Discard Conditioning ($w_{\text{disc}}$)**: Evaluates whether the discard was consistent with rank-based discard ($w_{\text{disc}} = 0.02$ if below discard) or texture preservation via `flop_score` (+1.6 flush, +1.2 straight draws).
+  - **Action Conditioning ($w_{\text{act}}$)**: Separates opponent's **Betting Range** (monsters, top pairs, high draws, bluffs) from their **Checking Range** (capped, marginal hands) based on real-time opponent aggression profiling ($AF$, $VPIP$) and `board_value_floor`.
+  - **River**: Exact exhaustive enumeration over all 903 opponent holdings with joint Bayesian weights in **< 3 ms**.
 
 ### 5. Texture-Aware River Value Floor (`board_value_floor`)
 - Dynamically derives the minimum hand category required for a rational opponent to value-bet given dangerous board runouts (4-flush $\implies$ category 5, 4-straight $\implies$ category 4, paired board with 3-flush $\implies$ category 3, trips on board $\implies$ category 6).

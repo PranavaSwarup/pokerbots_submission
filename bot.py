@@ -432,11 +432,11 @@ def fast_preflop_score(c_ints):
 
 def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_ints=None,
                 facing_bet=False, opp_is_station=False, opp_is_maniac=False, river_bluff_freq=None,
-                opp_is_rank_discarder=False, n_samples=200):
+                opp_is_rank_discarder=False, opp_raises_preflop=0, n_samples=200):
     """
     Computes Hand Strength (HS), Positive Potential (PPOT), Negative Potential (NPOT),
     and Effective Hand Strength (EHS) = HS * (1 - NPOT) + (1 - HS) * PPOT.
-    Conditions opponent range on both their exposed discard AND their betting action.
+    Conditions opponent range on preflop action, exposed discard, and betting action.
     """
     known = set(hole_ints) | set(board_ints) | dead_ints
     if opp_discard_int is not None:
@@ -463,6 +463,18 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
             alt_scores = {o: flop_score(o, opp_discard_int, flop_ints) for o in avail}
 
         for o1, o2 in combinations(avail, 2):
+            w_pref = 1.0
+            if opp_discard_int is not None and not opp_is_maniac:
+                pf_score = fast_preflop_score([o1, o2, opp_discard_int])
+                if opp_raises_preflop >= 1:
+                    if pf_score < 45:
+                        w_pref = 0.15
+                    elif pf_score < 60:
+                        w_pref = 0.50
+                elif opp_raises_preflop == 0:
+                    if pf_score >= 120:
+                        w_pref = 0.25
+
             w_disc = 1.0
             if opp_is_rank_discarder and disc_rv != -1:
                 # Rank-based discarder: kept cards cannot be lower than the discarded rank
@@ -505,7 +517,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
                 else:
                     w_act = 1.00
 
-            w_total = w_disc * w_act
+            w_total = w_pref * w_disc * w_act
             if my_score > s_opp:
                 wins_c += 1.0 * w_total
             elif my_score == s_opp:
@@ -532,6 +544,13 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         sampled = random.sample(avail, 2 + board_needed)
         opp = sampled[:2]
         runout = sampled[2:]
+
+        if opp_discard_int is not None and not opp_is_maniac:
+            pf_score = fast_preflop_score([opp[0], opp[1], opp_discard_int])
+            if opp_raises_preflop >= 1 and pf_score < 45 and random.random() < 0.80:
+                continue
+            elif opp_raises_preflop == 0 and pf_score >= 120 and random.random() < 0.75:
+                continue
 
         if opp_is_rank_discarder and disc_rv != -1:
             if min(opp[0] >> 2, opp[1] >> 2) < disc_rv:
@@ -1053,6 +1072,7 @@ class PokerBot:
                 opp_is_maniac=self.opp_model.is_maniac,
                 river_bluff_freq=self.opp_model.river_bluff_freq,
                 opp_is_rank_discarder=self.opp_model.is_rank_discarder,
+                opp_raises_preflop=opp_raises_preflop,
                 n_samples=n_samples
             )
             made_rank = eval_fast(hole_ints + board_ints) if len(board_ints) >= 3 else (0,)

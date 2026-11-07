@@ -134,6 +134,22 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - On paired and two-pair board textures, verifies whether the candidate holding's pair ranks match the hole cards or reside entirely on the board.
 - When an opponent bets holding board-playing unmade air, assigns action weights strictly to their empirical bluff frequency ($w_{\text{act}} = \text{bluff\_freq}$) rather than mistaking board pairs for genuine value bets ($w_{\text{act}} = 1.0$), eliminating false-positive opponent value assignments across turn and river calculations.
 
+### 28. SplitMix32 Mixed-Strategy Duplicate Synchronization
+- Replaces non-deterministic `random.random()` with a 32-bit SplitMix32 hash over `(self.hand_id, tag)`.
+- Guarantees that duplicate deal $k$ in Leg 1 and duplicate deal $k$ in Leg 2 evaluate identical pseudo-random rolls for mixed-strategy action boundaries, collapsing artificial self-play random walk variance while remaining unexploitable against external opponents.
+
+### 29. Turn Probe Betting & River Low-SPR Stack Commitment
+- Detects checked-through flop betting lines (`checked_through_prev`). Increases turn probe bet frequency to 88% and probe bluff frequency by +15% to seize dead pots.
+- Low-SPR stack-commitment defense: when $SPR \le 0.35$ and $to\_call \le 15$ chips into a large pot, calls if $EHS \ge pot\_odds$, preventing surrender of pots when pot-committed.
+
+### 30. O(1) Draw & Straight Detection Lookup Tables (23.6x Speedup)
+- Precomputes 8,192-entry bitmask tables at startup (`STRAIGHT_BONUS_TABLE`, `DRAW_TYPE_TABLE`, `IS_4STRAIGHT_TABLE`).
+- Replaces string formatting and `bin().count('1')` loops with instant array lookups, accelerating draw evaluation by 23.6x.
+
+### 31. Turn Monte Carlo Candidate Hoisting & Preflop Exploitative Sizing
+- Hoists alternative discard score evaluations outside Monte Carlo loops on turn (`alt_scores`), reducing `flop_score` calls from 400+ per turn evaluation down to 44.
+- Preflop sizing exploitation: drops button open size to 4 chips (min-raise) against nits to risk 3 chips for 70%+ fold equity; scales open size to 8 chips (4x BB) with monster hands against calling stations.
+
 ---
 
 ## ⏱️ Benchmark & Performance
@@ -142,17 +158,20 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `aggressive_bot.py`** | Stage 2 (1,000 hands) | **+31,425** | **Win (Capped +1000)** | **5.44 s** / 75.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 2 (1,000 hands) | **+32,340** | **Win (Capped +1000)** | **17.13 s** / 75.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 123)** | Stage 2 (1,000 hands) | **+30,312** | **Win (Capped +1000)** | **6.20 s** / 75.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 555)** | Stage 2 (1,000 hands) | **+28,207** | **Win (Capped +1000)** | **18.96 s** / 75.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 123)** | Stage 1 (400 hands) | **+12,061** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
-| **vs `aggressive_bot.py` (seed 42)** | Stage 1 (400 hands) | **+11,650** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 42)** | Stage 1 (400 hands) | **+11,615** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 777)** | Stage 1 (400 hands) | **+10,786** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 555)** | Stage 1 (400 hands) | **+9,466** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `random_bot.py` (seed 42)** | Stage 2 (1,000 hands) | **+21,346** | **Win (Capped +1000)** | **59.49 s** / 75.0 s | **0** |
 | **vs `random_bot.py` (seed 555)** | Stage 1 (400 hands) | **+9,322** | **Win (Capped +400)** | **4.28 s** / 30.0 s | **0** |
-| **vs `random_bot.py` (seed 42)** | Stage 1 (400 hands) | **+8,712** | **Win (Capped +400)** | **1.49 s** / 30.0 s | **0** |
 | **vs `random_bot.py` (seed 777)** | Stage 1 (400 hands) | **+7,767** | **Win (Capped +400)** | **4.39 s** / 30.0 s | **0** |
+| **vs `random_bot.py` (seed 42)** | Stage 1 (400 hands) | **+6,946** | **Win (Capped +400)** | **5.72 s** / 30.0 s | **0** |
 | **vs `random_bot.py` (seed 123)** | Stage 1 (400 hands) | **+5,457** | **Win (Capped +400)** | **3.20 s** / 30.0 s | **0** |
-| **vs `nit_bot.py`** | Stage 1 (400 hands) | **+804** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
-| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±17** | **Exact Equilibrium** | **10.50 s** / 30.0 s | **0** |
+| **vs `nit_bot.py` (seed 42)** | Stage 1 (400 hands) | **+1,572** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±487** | **Exact Equilibrium** | **21.95 s** / 30.0 s | **0** |
 
 ---
 

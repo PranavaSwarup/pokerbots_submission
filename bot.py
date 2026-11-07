@@ -216,28 +216,71 @@ def get_preflop_equity(hole_cards):
     return PREFLOP_LUT.get(pk, 0.50)
 
 
+def _init_draw_tables():
+    straight_bonus = [0.0] * 8192
+    draw_type = [0] * 8192
+    is_4straight = [False] * 8192
+
+    for mask in range(8192):
+        bonus = 0.0
+        for r in range(12, 3, -1):
+            if (mask & (0x1F << (r - 4))).bit_count() == 4:
+                bonus += 1.2
+                break
+        if bonus < 2.0 and (mask & 0x100F).bit_count() == 4:
+            bonus += 0.8
+        straight_bonus[mask] = bonus
+
+        is_oesd = False
+        for shift in range(9):
+            if ((mask >> shift) & 0x0F) == 0x0F:
+                is_oesd = True
+                break
+        if is_oesd:
+            draw_type[mask] = 2
+        else:
+            is_gut = False
+            for r in range(12, 3, -1):
+                if (mask & (0x1F << (r - 4))).bit_count() == 4:
+                    is_gut = True
+                    break
+            if not is_gut and (mask & 0x100F).bit_count() == 4:
+                is_gut = True
+            if is_gut:
+                draw_type[mask] = 1
+
+        is_4s = False
+        for r in range(12, 3, -1):
+            if (mask & (0x1F << (r - 4))).bit_count() >= 4:
+                is_4s = True
+                break
+        if not is_4s and (mask & 0x100F).bit_count() >= 4:
+            is_4s = True
+        is_4straight[mask] = is_4s
+
+    return straight_bonus, draw_type, is_4straight
+
+STRAIGHT_BONUS_TABLE, DRAW_TYPE_TABLE, IS_4STRAIGHT_TABLE = _init_draw_tables()
+
+
 def flop_score(c1, c2, flop_ints):
     """
     Evaluates 2-card holding strength on a 3-card flop with draw awareness.
     Awards bonus categories for 4-flush (1.6), open-ended straight draws (1.2), and gutshots (0.8).
     Returns (score_category, tiebreakers) for exact lexicographical comparison.
     """
-    c_ints = [c1, c2] + flop_ints
-    s = eval_fast(c_ints)
+    s = eval_fast([c1, c2] + flop_ints)
     suits = [0, 0, 0, 0]
-    mask = 0
-    for c in c_ints:
+    suits[c1 & 3] += 1
+    suits[c2 & 3] += 1
+    mask = (1 << (c1 >> 2)) | (1 << (c2 >> 2))
+    for c in flop_ints:
         suits[c & 3] += 1
         mask |= (1 << (c >> 2))
 
-    draw_bonus = 1.6 if (suits[0] >= 4 or suits[1] >= 4 or suits[2] >= 4 or suits[3] >= 4) else 0.0
-    for r in range(12, 3, -1):
-        if bin(mask & (0x1F << (r - 4))).count('1') == 4:
-            draw_bonus += 1.2
-            break
-    if draw_bonus < 2.0 and bin(mask & 0x100F).count('1') == 4:
-        draw_bonus += 0.8
-
+    has_flush = (suits[0] >= 4 or suits[1] >= 4 or suits[2] >= 4 or suits[3] >= 4)
+    sb = STRAIGHT_BONUS_TABLE[mask]
+    draw_bonus = (1.6 + 1.2) if (has_flush and sb >= 2.0) else ((1.6 if has_flush else 0.0) + sb)
     return (s[0] + draw_bonus, s[1:])
 
 
@@ -291,28 +334,16 @@ def draw_potential(c_ints, is_turn=False):
     Accurately accounts for 2 cards to come on flop vs 1 card to come on turn.
     Returns (draw_category, ppot_estimate).
     """
-    suits = [0] * 4
+    suits = [0, 0, 0, 0]
     mask = 0
     for c in c_ints:
         suits[c & 3] += 1
         mask |= (1 << (c >> 2))
 
-    is_flush_draw = (max(suits) == 4)
-
-    is_oesd = False
-    for shift in range(9):
-        if ((mask >> shift) & 0x0F) == 0x0F:
-            is_oesd = True
-            break
-
-    is_gutshot = False
-    if not is_oesd:
-        for r in range(12, 3, -1):
-            if bin(mask & (0x1F << (r - 4))).count('1') == 4:
-                is_gutshot = True
-                break
-        if not is_gutshot and bin(mask & 0x100F).count('1') == 4:
-            is_gutshot = True
+    is_flush_draw = (suits[0] >= 4 or suits[1] >= 4 or suits[2] >= 4 or suits[3] >= 4)
+    dt = DRAW_TYPE_TABLE[mask]
+    is_oesd = (dt == 2)
+    is_gutshot = (dt == 1)
 
     if is_turn:
         # 1 card to come (river) - 46 unseen cards
@@ -365,17 +396,12 @@ def is_river_scare_card(board_ints):
     """Detects if 5-card board has 3+ flush cards or 4 to a straight."""
     if len(board_ints) < 5:
         return False
-    suits = [0] * 4
+    suits = [0, 0, 0, 0]
     mask = 0
     for c in board_ints:
         suits[c & 3] += 1
         mask |= (1 << (c >> 2))
-    if max(suits) >= 3:
-        return True
-    for r in range(12, 3, -1):
-        if bin(mask & (0x1F << (r - 4))).count('1') >= 4:
-            return True
-    return bin(mask & 0x100F).count('1') >= 4
+    return (max(suits) >= 3) or IS_4STRAIGHT_TABLE[mask]
 
 
 def board_value_floor(board_ints):
@@ -385,7 +411,7 @@ def board_value_floor(board_ints):
     """
     if len(board_ints) < 3:
         return 2
-    suits = [0] * 4
+    suits = [0, 0, 0, 0]
     ranks = [0] * 13
     mask = 0
     for c in board_ints:
@@ -395,22 +421,12 @@ def board_value_floor(board_ints):
 
     if max(suits) >= 4:
         return 5
-
-    is_4straight = False
-    for r in range(12, 3, -1):
-        if bin(mask & (0x1F << (r - 4))).count('1') >= 4:
-            is_4straight = True
-            break
-    if not is_4straight and bin(mask & 0x100F).count('1') >= 4:
-        is_4straight = True
-    if is_4straight:
+    if IS_4STRAIGHT_TABLE[mask]:
         return 4
-
     if max(ranks) >= 3:
         return 6
     elif max(ranks) == 2 and max(suits) >= 3:
         return 3
-
     return 2
 
 
@@ -572,6 +588,10 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         if len(qual) >= 2:
             opp_pool = qual
 
+    alt_scores = None
+    if opp_pool is None and opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
+        alt_scores = {o: flop_score(o, opp_discard_int, flop_ints) for o in avail}
+
     while valid_samples < n_samples and attempts < max_attempts:
         attempts += 1
         if opp_pool is not None and random.random() < 0.95:
@@ -594,10 +614,10 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
             elif opp_raises_preflop == 0 and pf_score >= 120 and random.random() < 0.75:
                 continue
 
-        if opp_pool is None and opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
+        if alt_scores is not None:
             s_kept = flop_score(opp[0], opp[1], flop_ints)
-            s_alt1 = flop_score(opp[0], opp_discard_int, flop_ints)
-            s_alt2 = flop_score(opp[1], opp_discard_int, flop_ints)
+            s_alt1 = alt_scores[opp[0]]
+            s_alt2 = alt_scores[opp[1]]
             if s_kept >= s_alt1 and s_kept >= s_alt2:
                 keep_prob = 1.00
             elif s_kept >= min(s_alt1, s_alt2):
@@ -693,7 +713,16 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
         if opp_is_rank_discarder:
             opp_best = sorted(opp3, key=lambda c: (c >> 2), reverse=True)[:2]
         else:
-            opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], board_ints))
+            c0, c1, c2 = opp3[0], opp3[1], opp3[2]
+            sc0 = flop_score(c0, c1, board_ints)
+            sc1 = flop_score(c0, c2, board_ints)
+            sc2 = flop_score(c1, c2, board_ints)
+            if sc0 >= sc1 and sc0 >= sc2:
+                opp_best = (c0, c1)
+            elif sc1 >= sc2:
+                opp_best = (c0, c2)
+            else:
+                opp_best = (c1, c2)
 
         s_opp_curr = eval_fast(list(opp_best) + board_ints)
         s_opp_fin = eval_fast(list(opp_best) + full_b)
@@ -891,9 +920,18 @@ class PokerBot:
         self.cumulative_net = 0
         self.opp_raises_preflop = 0
 
+    def roll(self, tag=""):
+        """Deterministic, process-independent SplitMix32 uniform pseudo-random roll in [0, 1)."""
+        h = (self.hand_id * 0x9E3779B9) & 0xFFFFFFFF
+        for ch in tag:
+            h = ((h * 31) ^ ord(ch)) & 0xFFFFFFFF
+        h = ((h ^ (h >> 16)) * 0x85EBCA6B) & 0xFFFFFFFF
+        h = ((h ^ (h >> 13)) * 0xC2B2AE35) & 0xFFFFFFFF
+        return ((h ^ (h >> 16)) & 0xFFFFFFFF) / 4294967296.0
+
     # ---- Dynamic Simulation Budget Controller ----
 
-    def get_sim_budget(self, base=240):
+    def get_sim_budget(self, base=180):
         avg_ms_left = max(10.0, (self.time_left_ms - 2500.0) / max(self.hands_remaining * 3, 1))
         if self.time_left_ms < 4000:
             return 40   # Emergency fast mode
@@ -1055,14 +1093,14 @@ class PokerBot:
                     open_freq = 0.92
                 elif self.opp_model.is_station:
                     open_freq = 0.72
-                if "raise" in legal and random.random() < open_freq:
+                if "raise" in legal and self.roll("pf:btn_playable") < open_freq:
                     return self.build_raise(req, 0.30)
                 return self.call_or_check(legal)
             else:
                 def_freq = 0.45
                 if self.opp_model.fold_to_raise_pct > 0.50:
                     def_freq = 0.60
-                if "raise" in legal and random.random() < def_freq:
+                if "raise" in legal and self.roll("pf:bb_playable") < def_freq:
                     return self.build_raise(req, 0.35)
                 return self.call_or_check(legal)
 
@@ -1081,16 +1119,16 @@ class PokerBot:
                     open_freq = 0.75
                 elif self.opp_model.is_station:
                     open_freq = 0.30
-                if "raise" in legal and random.random() < open_freq:
+                if "raise" in legal and self.roll("pf:btn_marginal") < open_freq:
                     return self.build_raise(req, 0.25)
                 return self.call_or_check(legal)
             else:
                 # Big Blind facing a button limp (to_call == 0):
                 if to_call == 0 and "raise" in legal and raises_left > 0:
                     if self.opp_model.fold_to_raise_pct > 0.50:
-                        if random.random() < 0.85:
+                        if self.roll("pf:bb_limp_iso_fold") < 0.85:
                             return self.build_raise(req, 0.30)
-                    elif eq >= 0.38 and random.random() < 0.55:
+                    elif eq >= 0.38 and self.roll("pf:bb_limp_iso") < 0.55:
                         return self.build_raise(req, 0.30)
                 return self.call_or_check(legal)
 
@@ -1098,10 +1136,10 @@ class PokerBot:
         if is_button and opp_raises == 0:
             # Exploitative button steals against nits and folding opponents
             if self.opp_model.is_nit:
-                if "raise" in legal and random.random() < 0.90:
+                if "raise" in legal and self.roll("pf:nit_steal") < 0.90:
                     return self.build_raise(req, 0.25)
             elif self.opp_model.fold_to_raise_pct > 0.55:
-                if "raise" in legal and random.random() < 0.65:
+                if "raise" in legal and self.roll("pf:folder_steal") < 0.85:
                     return self.build_raise(req, 0.25)
             # Limp in position with speculative hands (getting 3:1 pot odds)
             if eq >= 0.18 and not self.opp_model.is_maniac:
@@ -1139,6 +1177,15 @@ class PokerBot:
             1 for h in history
             if h.get("actor") == "opp" and h["action"] == "raise" and h["street"] == "preflop"
         )
+        opp_bet_flop = any(
+            h.get("actor") == "opp" and h.get("action") == "raise" and h.get("street") == "flop"
+            for h in history
+        )
+        opp_bet_turn = any(
+            h.get("actor") == "opp" and h.get("action") == "raise" and h.get("street") == "turn"
+            for h in history
+        )
+        checked_through_prev = (street == "turn" and not opp_bet_flop) or (street == "river" and not opp_bet_turn)
 
         if street == "flop":
             # On the flop, both players hold 3 cards and see 3 community cards.
@@ -1207,10 +1254,10 @@ class PokerBot:
         # 1. MONSTER / NUTS (EHS >= 0.85)
         if ehs >= 0.85:
             # Check-raise trap: If OOP on flop/turn against aggressive bettor, check first
-            if to_call == 0 and self.seat == "big_blind" and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and street in ("flop", "turn") and random.random() < 0.75:
+            if to_call == 0 and self.seat == "big_blind" and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and street in ("flop", "turn") and self.roll(f"{street}:oop_trap") < 0.75:
                 return {"type": "action", "action": "check"}
             # In-position slow-play on dry flop boards vs aggressive opponents:
-            if to_call == 0 and self.seat == "button" and street == "flop" and not is_board_wet(board_ints) and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and random.random() < 0.30:
+            if to_call == 0 and self.seat == "button" and street == "flop" and not is_board_wet(board_ints) and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and self.roll("flop:dry_trap") < 0.30:
                 return {"type": "action", "action": "check"}
             if "raise" in legal and raises_left > 0:
                 if street == "river" and ehs >= 0.95 and self.opp_model.is_station:
@@ -1232,7 +1279,7 @@ class PokerBot:
                         return self.build_raise(req, sizing)
                     return {"type": "action", "action": "check"}
                 if "raise" in legal and raises_left > 0:
-                    sizing = 0.60 if spr > 2.5 else 0.70
+                    sizing = 0.75 if self.opp_model.is_station else (0.60 if spr > 2.5 else 0.70)
                     return self.build_raise(req, sizing)
                 return {"type": "action", "action": "check"}
             else:
@@ -1254,16 +1301,19 @@ class PokerBot:
             if to_call == 0:
                 # River check-back: realize showdown value with medium hands unless station
                 if street == "river":
-                    if self.opp_model.is_station and "raise" in legal and raises_left > 0 and random.random() < 0.60:
+                    if self.opp_model.is_station and "raise" in legal and raises_left > 0 and self.roll("river:station_val") < 0.60:
                         return self.build_raise(req, 0.40)
                     return {"type": "action", "action": "check"}
                 # Flop / Turn: bet for value & protection, higher in position or against folders
                 bet_freq = 0.75 if self.seat == "button" else 0.55
+                if street == "turn" and not opp_bet_flop:
+                    # Turn Probe Bet: punish opponent for checking behind on the flop
+                    bet_freq = 0.88
                 if self.opp_model.is_nit:
                     bet_freq = 1.00
                 elif self.opp_model.fold_to_raise_pct > 0.50:
                     bet_freq = 0.90
-                if "raise" in legal and raises_left > 0 and random.random() < bet_freq:
+                if "raise" in legal and raises_left > 0 and self.roll(f"{street}:val_bet") < bet_freq:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
@@ -1297,12 +1347,14 @@ class PokerBot:
                     cbet_freq = 0.85
                 elif self.opp_model.is_station:
                     cbet_freq *= 0.5
-                if "raise" in legal and street != "river" and random.random() < cbet_freq:
+                if "raise" in legal and street != "river" and self.roll(f"{street}:cbet") < cbet_freq:
                     return self.build_raise(req, 0.38)
                 return {"type": "action", "action": "check"}
             else:
                 if street == "river" and to_call > 0:
                     v_floor = board_value_floor(board_ints)
+                    if spr <= 0.35 and to_call <= 15 and ehs >= pot_odds:
+                        return self.call_or_check(legal)
                     if self.opp_model.is_maniac or self.opp_model.river_bluff_freq >= 0.25:
                         if hand_cat >= 1 and ehs >= pot_odds + 0.02:
                             return self.call_or_check(legal)
@@ -1314,7 +1366,7 @@ class PokerBot:
                     # Semi-bluff raise turn with combo draws facing single bet vs folders
                     if "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
                         if draw_cat == 'combo' and to_call <= 18 and self.opp_model.fold_to_raise_pct > 0.45 and not self.opp_model.is_station:
-                            if random.random() < 0.40:
+                            if self.roll("turn:semi_raise") < 0.40:
                                 return self.build_raise(req, 0.60)
                     if ehs >= pot_odds:
                         return self.call_or_check(legal)
@@ -1327,7 +1379,7 @@ class PokerBot:
                 # Flop semi-bluff raise with combo/nut draws facing a single bet
                 if "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
                     if (draw_cat == 'combo' or (has_draw_flag and ehs >= 0.40)) and to_call <= 15 and not self.opp_model.is_station:
-                        if random.random() < 0.40:
+                        if self.roll("flop:semi_raise") < 0.40:
                             return self.build_raise(req, 0.55)
                 if spr > 2.0 and (ehs + ppot * 0.28) >= pot_odds:
                     return self.call_or_check(legal)
@@ -1336,7 +1388,7 @@ class PokerBot:
         # 5. WEAK / MARGINAL (EHS >= 0.20)
         if ehs >= 0.20:
             if to_call == 0:
-                if "raise" in legal and (self.opp_model.is_nit or self.should_bluff(street, board_ints)):
+                if "raise" in legal and (self.opp_model.is_nit or self.should_bluff(street, board_ints, checked_through_prev)):
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
@@ -1345,13 +1397,13 @@ class PokerBot:
                 # In-Position Flop Float: see opponent's discard and capture positional advantage
                 if street == "flop" and self.seat == "button" and to_call <= 3 and ehs >= 0.18 and not self.opp_model.is_station:
                     return self.call_or_check(legal)
-                if to_call <= 2 and pot >= 8 and random.random() < 0.25:
+                if to_call <= 2 and pot >= 8 and self.roll(f"{street}:cheap_call") < 0.25:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
 
         # 6. PURE AIR
         if to_call == 0:
-            if "raise" in legal and (self.opp_model.is_nit or self.should_bluff(street, board_ints)):
+            if "raise" in legal and (self.opp_model.is_nit or self.should_bluff(street, board_ints, checked_through_prev)):
                 return self.build_raise(req, 0.45)
             return {"type": "action", "action": "check"}
         if street == "river":
@@ -1362,7 +1414,7 @@ class PokerBot:
 
     # ---- Exploitative Adjustments ----
 
-    def should_bluff(self, street, board_ints=None):
+    def should_bluff(self, street, board_ints=None, checked_through_prev=False):
         if self.opp_model.is_station:
             return False
         if street == "river":
@@ -1370,13 +1422,17 @@ class PokerBot:
             if board_ints and not is_river_scare_card(board_ints):
                 return False
             freq = 0.15 if self.opp_model.fold_to_raise_pct > 0.40 else 0.05
+            if checked_through_prev:
+                freq += 0.10
         else:
             freq = 0.26 if self.seat == "button" else 0.15
+            if checked_through_prev:
+                freq += 0.15
         if self.opp_model.is_nit:
             freq *= 1.8
         elif self.opp_model.fold_to_raise_pct > 0.50:
             freq *= 1.4
-        return random.random() < min(0.85, freq)
+        return self.roll(f"{street}:bluff") < min(0.85, freq)
 
     # ---- Professional Heads-Up Bet & Raise Sizing with Texture Adaptation ----
 
@@ -1396,7 +1452,12 @@ class PokerBot:
 
         if street == "preflop":
             if to_call <= 1:
-                target = 5
+                if self.opp_model.is_nit:
+                    target = 4
+                elif self.opp_model.is_station and sizing >= 0.65:
+                    target = 8
+                else:
+                    target = 5
             else:
                 if sizing >= 0.70:
                     target = int(opp_bet * 2.5) if opp_bet >= 10 else opp_bet * 3

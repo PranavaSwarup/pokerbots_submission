@@ -33,6 +33,8 @@ import sys
 import json
 import random
 import time
+import base64
+import zlib
 from itertools import combinations
 from collections import Counter
 
@@ -193,6 +195,25 @@ def fast_canon_key(cards):
         else:
             p = 7
         return (r1, r2, r3, p)
+
+
+# Precomputed canonical preflop equities (1,755 keys, 1,000 sims each)
+PREFLOP_B85 = (
+    "c-kFQX_M4O68(MqVIAy_jbTpuP`6rA>nuqnmG1k#x+V2Y&p><ef&l{qJA+{`#)hyR!LPEs^(iAWEA!>c7kPI<(*!nM+_`(}_CE*?FuXvp)ZWoow{8J`fB*Ps@A&rK?SCqQh$K@oNCy1t@T+hB%?XExhbMan2VZ}?r-H+yqi;{{9*y?DzH@wXd`A~UXxfgdAe~-LC!_J6usoj4#`}lU{qa5&7t7grb}*Tb_fL+o@nLA=GmM!ps3~@QZ!(@8oh<SBfvJa?m!zrh#(@Q>!^!kyAHgY(9o)gl$>gqO%t?GSqL<_O?BL!MKXDzJn9oN`j-V)PHkuvJC)4>!Y%yR-QVWJ<a2%g6=ERsJkH#!EIrh@Ft5#`|R#h0riA+xL@i+Hm=?I?^)A<a?DBr_pgSDVoYPR4>60<FCG5LQFX37$Cju=LvMouj73Qe;NBh0{3T(S$AVu+ErVCH4XC=@S1nE|9IF)YszJR{&D!D9qYGI(8_|EJq-&Nj`a-$Z@aN)k1iO{SJe5*U7nv-F6tOp3%Qf&?Oq5d_6?g}<C(<cK3llHeFXkfI;~P=>;=JQ_fZCIy-iX<4QrFY}zhH#M)QjHn7gp;ZHLtSE8_ad0`{1RTWb2a-DYHK<6utV#&l2C@MXB_Oc6$kRM43CnK%?7{cnKREyIlk?qrcfRZT9fAvroMW=N1k#iu2w{miF3Yk5+ce41OOdD8%+qLkIcFt>W(RpOj0ky}tWq6t3IzbK2!bfFlB{Yf3rtyoO>RLBiO3XWSrrEm$WS5BH4{pl26=wdYL265x~{33XzQ9RnFd0p>;CQ1MF~p7+wDSRJErAonx4hT(F{L!)F^NgdnjibrX`}GrGdci!H>^>c=___<JXU$+<&@zbpO%ryO#*eITmM;#X}Aw0Sg!+atE+;hGAuvk`R(WkdP2iO9UY+N}43fvaTYy&2=Ej+`u<47_zEDsKWt~p-KF<MNk)^p{lB+tF|myu3{JiL`8E9&oFme<N;`_fg)+DYsj|g1j9tJZ@69@dX{5bj`;8*3FCo)*tg6yaw8>*oxqDi#}C3ZOdP}Z%pi6VLQfxizUgT}5>#<gIKCNHY3L>HDh~5HFa6YY1Jg4@q#M5NNS8mndHv?<`sM3auirj-`{McK<LA$Qe0C`U3D6`RX+Q)#r;4%&a!rF45KK=I1<lX|-j8IY4N5aTDA=mWOM`r%c)IbSrW=Oof+0)Meb=@Tw1(Z8ZKp-Zgr;JtvhI4wkbO5$13e5-=mkcwy9iC+kwVwC3@^-G)3Y7V4QwAdsgs0$9A%OB=wX?7z8~d57^kThn^70#W*j(?n>1D7rBPEv?r=c-7gt5$B=JC88a7psMqV1EVVOr!os>yjH|wPQ+im(rXea)wS8+4MlXaPftG+0*Y+V)Ysw?WUt5<Q__Dz+=WnOv7D$MLCDWd$%_0_NM-u-lQbM@xte?Py!xqf?fd42uU`x{M?5tMktQyot-2BmUxmTD?ekm0!oG~xilKC$C4F;&ZV(6D1o4-DNl@-s8eT_^T@!w&s{1h)x7!w83SxZM<G?s!R&xJDY+u9+sb7wUs3{InQ8JbIWW!LaZ;P2#G^>u?|;3X*l=1Vxz!p<Ar;{Kb<vF9Ne%)oI*iO<0#%?MF?yDvM&3XGPaUtEBDgvV8V@U1nLmYMLxPz2CHLQ+HKauB)c%`_ro3wDo3vwpp*LRo_+B<yE`w%2nSt*`~eN^vMvb+J3X{yVa_%+TyHh*8SPKZ}XyS>#psy?A_bbzF(KyP21<~P-?Ti*fh=QY10ixf4bg&*PmZ>-RAyj-&WhAU-#!tHKb)9KE40)@$(;F{`m8k&!2z)`SYhQAAWiN+sEHNe){ki@cnTB"
+)
+
+def _init_preflop_lut():
+    deck = [r + s for r in RANKS for s in SUITS]
+    keys = sorted({(r1 << 11) | (r2 << 7) | (r3 << 3) | p for c in combinations(deck, 3) for r1, r2, r3, p in [fast_canon_key(c)]})
+    vals = zlib.decompress(base64.b85decode(PREFLOP_B85))
+    return {k: v / 255.0 for k, v in zip(keys, vals)}
+
+PREFLOP_LUT = _init_preflop_lut()
+
+def get_preflop_equity(hole_cards):
+    r1, r2, r3, p = fast_canon_key(hole_cards)
+    pk = (r1 << 11) | (r2 << 7) | (r3 << 3) | p
+    return PREFLOP_LUT.get(pk, 0.50)
 
 
 def flop_score(c1, c2, flop_ints):
@@ -494,7 +515,12 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         b_suits[c & 3] += 1
     max_b_suit = max(b_suits)
 
-    for _ in range(n_samples):
+    valid_samples = 0
+    attempts = 0
+    max_attempts = n_samples * 4
+
+    while valid_samples < n_samples and attempts < max_attempts:
+        attempts += 1
         sampled = random.sample(avail, 2 + board_needed)
         opp = sampled[:2]
         runout = sampled[2:]
@@ -526,6 +552,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
                 if random.random() > 0.05:
                     continue
 
+        valid_samples += 1
         c_idx = 0 if my_curr > opp_curr else (1 if my_curr == opp_curr else 2)
 
         full_b = board_ints + runout
@@ -574,8 +601,11 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
     ]
     wins = [0.0, 0.0, 0.0]
     valid_samples = 0
+    attempts = 0
+    max_attempts = n_samples * 3
 
-    for _ in range(n_samples):
+    while valid_samples < n_samples and attempts < max_attempts:
+        attempts += 1
         sampled = random.sample(avail, 5)
         opp3 = sampled[:3]
         runout = sampled[3:]
@@ -827,14 +857,8 @@ class PokerBot:
         history = req.get("history", [])
         is_button = (self.seat == "button")
 
-        # Preflop Equity Simulation with Canonical Equivalence Class Caching
-        cache_key = fast_canon_key(self.hole_cards)
-        if cache_key in self.preflop_cache:
-            eq = self.preflop_cache[cache_key]
-        else:
-            n_sims = self.get_sim_budget(base=160)
-            eq = simulate_preflop_equity(self.hole_cards, n_sims)
-            self.preflop_cache[cache_key] = eq
+        # Preflop Equity: Instant O(1) canonical equivalence class lookup
+        eq = get_preflop_equity(self.hole_cards)
 
         opp_raises = sum(
             1 for h in history

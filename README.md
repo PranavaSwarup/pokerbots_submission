@@ -74,7 +74,7 @@ Tested under official local engine conditions (`engine.py`):
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+13,901** | **Win (Capped +400)** | **9.95 s** / 30.0 s | **0** |
 | **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+27,779** | **Win (Capped +1000)** | **42.16 s** / 75.0 s | **0** |
-| **vs `random_bot.py`** | Stage 1 (400 hands) | **+9,880** | **Win (Capped +400)** | **12.36 s** / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 1 (400 hands) | **+10,349** | **Win (Capped +400)** | **7.03 s** / 30.0 s | **0** |
 | **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±319** | **Near-Equilibrium** | **20.8 s** / 30.0 s | **0** |
 
 ---

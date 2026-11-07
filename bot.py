@@ -628,12 +628,11 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
 # ============================================================================
 
 def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop=0,
-                            opp_is_rank_discarder=False, n_samples=220):
+                            opp_is_rank_discarder=False, n_samples=200):
     """
-    Selects the card to discard using Common Random Numbers (CRN):
-    Evaluates all 3 candidate discards against the EXACT SAME opponent cards
-    and board runouts, eliminating sample variance and accelerating evaluation.
-    Applies preflop action range filtering and rank-discard awareness.
+    Selects the card to discard using Common Random Numbers (CRN) with full 2D Transition Matrix:
+    Evaluates Current Hand Strength (HS), Negative Potential (NPOT), Positive Potential (PPOT),
+    and Effective Hand Strength (EHS) for all 3 candidate discards against the EXACT SAME opponent cards.
     """
     hole_ints = [CARD_TO_INT[c] for c in hole_strs]
     board_ints = [CARD_TO_INT[c] for c in board_strs]
@@ -645,7 +644,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
         [hole_ints[0], hole_ints[2]],  # discard card 1
         [hole_ints[0], hole_ints[1]],  # discard card 2
     ]
-    wins = [0.0, 0.0, 0.0]
+    hp = [[[0, 0, 0], [0, 0, 0], [0, 0, 0]] for _ in range(3)]
     valid_samples = 0
     attempts = 0
     max_attempts = n_samples * 3
@@ -667,18 +666,33 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
             opp_best = sorted(opp3, key=lambda c: (c >> 2), reverse=True)[:2]
         else:
             opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], board_ints))
-        s_opp = eval_fast(list(opp_best) + full_b)
+
+        s_opp_curr = eval_fast(list(opp_best) + board_ints)
+        s_opp_fin = eval_fast(list(opp_best) + full_b)
 
         for i in range(3):
-            s_my = eval_fast(candidates[i] + full_b)
-            if s_my > s_opp:
-                wins[i] += 1.0
-            elif s_my == s_opp:
-                wins[i] += 0.5
+            s_my_curr = eval_fast(candidates[i] + board_ints)
+            s_my_fin = eval_fast(candidates[i] + full_b)
+            c_idx = 0 if s_my_curr > s_opp_curr else (1 if s_my_curr == s_opp_curr else 2)
+            f_idx = 0 if s_my_fin > s_opp_fin else (1 if s_my_fin == s_opp_fin else 2)
+            hp[i][c_idx][f_idx] += 1
 
-    best_idx = max(range(3), key=lambda i: wins[i] + 0.0001 * (12 - RV.get(hole_strs[i][0], 0)))
-    best_equity = wins[best_idx] / max(valid_samples, 1)
-    return hole_strs[best_idx], best_equity
+    ehs_vals = [0.5, 0.5, 0.5]
+    ppot_vals = [0.0, 0.0, 0.0]
+    total_samples = max(valid_samples, 1)
+
+    for i in range(3):
+        na = sum(hp[i][0])
+        nt = sum(hp[i][1])
+        nb = sum(hp[i][2])
+        hs = (na + 0.5 * nt) / total_samples
+        ppot = (hp[i][2][0] + 0.5 * hp[i][2][1] + 0.5 * hp[i][1][0]) / max(nb + nt, 1)
+        npot = (hp[i][0][2] + 0.5 * hp[i][0][1]) / max(na, 1)
+        ehs_vals[i] = hs * (1.0 - npot) + (1.0 - hs) * ppot
+        ppot_vals[i] = ppot
+
+    best_idx = max(range(3), key=lambda i: ehs_vals[i] + 0.0001 * (12 - RV.get(hole_strs[i][0], 0)))
+    return hole_strs[best_idx], ehs_vals[best_idx], ppot_vals[best_idx]
 
 
 # ============================================================================
@@ -908,14 +922,15 @@ class PokerBot:
         if self.cached_discard and self.cached_discard in hole:
             return {"type": "discard", "card": self.cached_discard}
 
-        n_samples = self.get_sim_budget(base=220)
-        best_card, _ = select_best_discard_ehs(
+        n_samples = self.get_sim_budget(base=200)
+        best_card, best_ehs, _ = select_best_discard_ehs(
             hole, board, self.dead_cards,
             opp_raises_preflop=self.opp_raises_preflop,
             opp_is_rank_discarder=self.opp_model.is_rank_discarder,
             n_samples=n_samples
         )
         self.cached_discard = best_card
+        self.cached_flop_ehs = best_ehs
         return {"type": "discard", "card": best_card}
 
     # ---- Action Request ----
@@ -1082,30 +1097,52 @@ class PokerBot:
 
         n_samples = self.get_sim_budget(base=220)
 
-        # Unified Action-aware and discard-conditioned EHS with calibrated draw potential
         opp_raises_preflop = sum(
             1 for h in history
             if h.get("actor") == "opp" and h["action"] == "raise" and h["street"] == "preflop"
         )
-        _, ppot, _, ehs = compute_ehs(
-            hole_ints, board_ints, dead_ints,
-            opp_discard_int=opp_disc_int, flop_ints=flop_ints,
-            facing_bet=(to_call > 0),
-            opp_is_station=self.opp_model.is_station,
-            opp_is_maniac=self.opp_model.is_maniac,
-            river_bluff_freq=self.opp_model.river_bluff_freq,
-            opp_is_rank_discarder=self.opp_model.is_rank_discarder,
-            opp_raises_preflop=opp_raises_preflop,
-            n_samples=n_samples
-        )
-        made_rank = eval_fast(hole_ints + board_ints) if len(board_ints) >= 3 else (0,)
 
-        draw_cat = 'none'
-        has_draw_flag = False
-        if street in ("flop", "turn"):
-            draw_cat, ppot_val = draw_potential(hole_ints + board_ints, is_turn=(street == "turn"))
+        if street == "flop":
+            # On the flop, both players hold 3 cards and see 3 community cards.
+            # True 3-to-2 Discard Hold'em evaluation:
+            if self.cached_flop_ehs is not None and self.cached_discard is not None:
+                ehs = self.cached_flop_ehs
+                best_card = self.cached_discard
+                ppot = 0.0
+            else:
+                best_card, ehs, ppot = select_best_discard_ehs(
+                    self.hole_cards, board, self.dead_cards,
+                    opp_raises_preflop=opp_raises_preflop,
+                    opp_is_rank_discarder=self.opp_model.is_rank_discarder,
+                    n_samples=n_samples
+                )
+                self.cached_discard = best_card
+                self.cached_flop_ehs = ehs
+            kept_ints = [c for c in hole_ints if c != CARD_TO_INT[best_card]]
+            made_rank = eval_fast(kept_ints + board_ints)
+            draw_cat, ppot_val = draw_potential(kept_ints + board_ints, is_turn=False)
             has_draw_flag = (draw_cat in ('combo', 'flush', 'oesd'))
             ppot = max(ppot, ppot_val)
+        else:
+            # Turn and River: both players hold exactly 2 cards, and opp_discard is known.
+            _, ppot, _, ehs = compute_ehs(
+                hole_ints, board_ints, dead_ints,
+                opp_discard_int=opp_disc_int, flop_ints=flop_ints,
+                facing_bet=(to_call > 0),
+                opp_is_station=self.opp_model.is_station,
+                opp_is_maniac=self.opp_model.is_maniac,
+                river_bluff_freq=self.opp_model.river_bluff_freq,
+                opp_is_rank_discarder=self.opp_model.is_rank_discarder,
+                opp_raises_preflop=opp_raises_preflop,
+                n_samples=n_samples
+            )
+            made_rank = eval_fast(hole_ints + board_ints) if len(board_ints) >= 3 else (0,)
+            draw_cat = 'none'
+            has_draw_flag = False
+            if street == "turn":
+                draw_cat, ppot_val = draw_potential(hole_ints + board_ints, is_turn=True)
+                has_draw_flag = (draw_cat in ('combo', 'flush', 'oesd'))
+                ppot = max(ppot, ppot_val)
 
         hand_cat = made_rank[0]
 

@@ -480,6 +480,10 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
     # --- FLOP / TURN: 2D Transition Matrix (Current vs River) ---
     my_curr = eval_fast(hole_ints + board_ints)
     hp = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    b_suits = [0] * 4
+    for c in board_ints:
+        b_suits[c & 3] += 1
+    max_b_suit = max(b_suits)
 
     for _ in range(n_samples):
         sampled = random.sample(avail, 2 + board_needed)
@@ -502,10 +506,15 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         opp_curr = eval_fast(opp + board_ints)
 
         # Action conditioning on turn: passive / standard players rarely bet pure unmade air
-        if facing_bet and board_needed == 1 and opp_curr[0] == 0 and not opp_is_maniac:
-            draw_cat, _ = draw_potential(opp + board_ints)
-            if draw_cat not in ('combo', 'flush', 'oesd') and random.random() > (0.02 if opp_is_station else 0.15):
-                continue
+        if facing_bet and board_needed == 1 and not opp_is_maniac:
+            if opp_curr[0] == 0:
+                draw_cat, _ = draw_potential(opp + board_ints)
+                if draw_cat not in ('combo', 'flush', 'oesd') and random.random() > (0.02 if opp_is_station else 0.15):
+                    continue
+            elif max_b_suit >= 4 and opp_curr[0] < 5:
+                # 4-flush on turn board: non-flush holdings rarely bet
+                if random.random() > 0.05:
+                    continue
 
         c_idx = 0 if my_curr > opp_curr else (1 if my_curr == opp_curr else 2)
 
@@ -554,6 +563,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
         [hole_ints[0], hole_ints[1]],  # discard card 2
     ]
     wins = [0.0, 0.0, 0.0]
+    valid_samples = 0
 
     for _ in range(n_samples):
         sampled = random.sample(avail, 5)
@@ -564,6 +574,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
         if opp_raises_preflop >= 1 and fast_preflop_score(opp3) < 55 and random.random() < 0.75:
             continue
 
+        valid_samples += 1
         full_b = board_ints + runout
 
         opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], board_ints))
@@ -577,7 +588,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
                 wins[i] += 0.5
 
     best_idx = max(range(3), key=lambda i: wins[i] + 0.0001 * (12 - RV.get(hole_strs[i][0], 0)))
-    best_equity = wins[best_idx] / max(n_samples, 1)
+    best_equity = wins[best_idx] / max(valid_samples, 1)
     return hole_strs[best_idx], best_equity
 
 
@@ -778,7 +789,7 @@ class PokerBot:
             return {"type": "discard", "card": self.cached_discard}
 
         n_samples = self.get_sim_budget(base=220)
-        best_card, _ = select_best_discard_ehs(hole, board, self.dead_cards, n_samples)
+        best_card, _ = select_best_discard_ehs(hole, board, self.dead_cards, n_samples=n_samples)
         self.cached_discard = best_card
         return {"type": "discard", "card": best_card}
 
@@ -835,6 +846,8 @@ class PokerBot:
             if to_call > 20 and not self.opp_model.is_maniac and eq < 0.60:
                 return self.fold_or_check(legal)
             if opp_raises >= 2:
+                if eq < 0.62 and not self.opp_model.is_maniac:
+                    return self.fold_or_check(legal)
                 return self.call_or_check(legal)
             if "raise" in legal and raises_left > 0:
                 return self.build_raise(req, 0.50)
@@ -1051,10 +1064,9 @@ class PokerBot:
                         return self.call_or_check(legal)
                     return self.fold_or_check(legal)
                 if street == "turn":
-                    # On the turn, only 1 card left to river: implied odds are lower
-                    if to_call <= 22 and spr > 2.0 and (ehs + ppot * 0.15) >= pot_odds:
-                        return self.call_or_check(legal)
                     if ehs >= pot_odds:
+                        return self.call_or_check(legal)
+                    if to_call <= 22 and spr > 2.0 and (ehs + ppot * 0.15) >= pot_odds:
                         return self.call_or_check(legal)
                     return self.fold_or_check(legal)
                 # Flop:
@@ -1071,6 +1083,8 @@ class PokerBot:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
+                if ehs >= pot_odds:
+                    return self.call_or_check(legal)
                 if to_call <= 2 and pot >= 8 and random.random() < 0.25:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
@@ -1080,6 +1094,8 @@ class PokerBot:
             if "raise" in legal and self.should_bluff(street, board_ints):
                 return self.build_raise(req, 0.45)
             return {"type": "action", "action": "check"}
+        if ehs >= pot_odds:
+            return self.call_or_check(legal)
         return self.fold_or_check(legal)
 
     # ---- Exploitative Adjustments ----

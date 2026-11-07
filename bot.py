@@ -159,8 +159,41 @@ def eval_fast(c_ints):
 
 
 # ============================================================================
-# REALISTIC PREFLOP DISCARD HOLD'EM SIMULATION & FLOP SCORE
+# CANONICAL ISOMORPHISM & REALISTIC PREFLOP DISCARD HOLD'EM SIMULATION
 # ============================================================================
+
+def fast_canon_key(cards):
+    """
+    Computes exact suit-isomorphic equivalence class for any 3-card hand in ~1 µs.
+    Compresses state space from 22,100 hands to exactly 1,755 canonical patterns,
+    boosting preflop cache hit rates and eliminating redundant simulations.
+    """
+    ranks = sorted([RV[c[0]] for c in cards], reverse=True)
+    r1, r2, r3 = ranks[0], ranks[1], ranks[2]
+    s1, s2, s3 = [c[1] for c in sorted(cards, key=lambda c: RV[c[0]], reverse=True)]
+    if r1 == r2 == r3:
+        return (r1, r2, r3, 0)
+    elif r1 == r2 or r2 == r3:
+        if r1 == r2:
+            kicker_s = [c[1] for c in cards if RV[c[0]] == r3][0]
+            pair_s = [c[1] for c in cards if RV[c[0]] == r1]
+        else:
+            kicker_s = [c[1] for c in cards if RV[c[0]] == r1][0]
+            pair_s = [c[1] for c in cards if RV[c[0]] == r2]
+        return (r1, r2, r3, 1 if kicker_s in pair_s else 2)
+    else:
+        if s1 == s2 == s3:
+            p = 3
+        elif s1 == s2:
+            p = 4
+        elif s1 == s3:
+            p = 5
+        elif s2 == s3:
+            p = 6
+        else:
+            p = 7
+        return (r1, r2, r3, p)
+
 
 def flop_score(c1, c2, flop_ints):
     """
@@ -217,29 +250,54 @@ def simulate_preflop_equity(hole_strs, n_sims=80):
 
 
 # ============================================================================
-# ACTION-AWARE EFFECTIVE HAND STRENGTH (EHS)
+# ACTION-AWARE EFFECTIVE HAND STRENGTH (EHS) & DRAW ANALYSIS
 # ============================================================================
 
-def has_draw(c_ints):
-    """Checks for 4-to-a-flush or open-ended / gutshot straight draws."""
+def draw_potential(c_ints):
+    """
+    Evaluates draw strength and Positive Potential (PPOT) for flop or turn holdings.
+    Distinguishes combo draws (12-15 outs), flush draws (9 outs), OESDs (8 outs),
+    and gutshots (4 outs) to avoid costly negative-EV calls on weak inside draws.
+    Returns (draw_category, ppot_estimate).
+    """
     suits = [0] * 4
-    ranks = [0] * 13
+    mask = 0
     for c in c_ints:
         suits[c & 3] += 1
-        ranks[c >> 2] += 1
-    if suits[0] >= 4 or suits[1] >= 4 or suits[2] >= 4 or suits[3] >= 4:
-        return True
-    mask = 0
-    for r in range(13):
-        if ranks[r] > 0:
-            mask |= (1 << r)
-    for r in range(12, 3, -1):
-        pat = 0x1F << (r - 4)
-        if bin(mask & pat).count('1') >= 4:
-            return True
-    if bin(mask & 0x100F).count('1') >= 4:
-        return True
-    return False
+        mask |= (1 << (c >> 2))
+
+    is_flush_draw = (max(suits) == 4)
+
+    is_oesd = False
+    for shift in range(9):
+        if ((mask >> shift) & 0x0F) == 0x0F:
+            is_oesd = True
+            break
+
+    is_gutshot = False
+    if not is_oesd:
+        for r in range(12, 3, -1):
+            if bin(mask & (0x1F << (r - 4))).count('1') == 4:
+                is_gutshot = True
+                break
+        if not is_gutshot and bin(mask & 0x100F).count('1') == 4:
+            is_gutshot = True
+
+    if is_flush_draw and (is_oesd or is_gutshot):
+        return ('combo', 0.50)
+    elif is_flush_draw:
+        return ('flush', 0.36)
+    elif is_oesd:
+        return ('oesd', 0.32)
+    elif is_gutshot:
+        return ('gutshot', 0.14)
+    return ('none', 0.05)
+
+
+def has_draw(c_ints):
+    """Backward compatibility wrapper checking if holding has any draw."""
+    cat, _ = draw_potential(c_ints)
+    return cat != 'none'
 
 
 def is_board_wet(board_ints):
@@ -277,7 +335,7 @@ def is_river_scare_card(board_ints):
 
 
 def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_ints=None,
-                facing_bet=False, opp_is_station=False, opp_is_maniac=False, n_samples=200):
+                facing_bet=False, opp_is_station=False, opp_is_maniac=False, river_bluff_freq=None, n_samples=200):
     """
     Computes Hand Strength (HS), Positive Potential (PPOT), Negative Potential (NPOT),
     and Effective Hand Strength (EHS) = HS * (1 - NPOT) + (1 - HS) * PPOT.
@@ -295,7 +353,10 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         wins_c = 0.0
         total_weight = 0.0
 
-        bluff_freq = 0.40 if opp_is_maniac else (0.02 if opp_is_station else 0.15)
+        if river_bluff_freq is not None:
+            bluff_freq = river_bluff_freq
+        else:
+            bluff_freq = 0.40 if opp_is_maniac else (0.02 if opp_is_station else 0.15)
         max_board_rank = max(c >> 2 for c in board_ints)
 
         alt_scores = None
@@ -311,7 +372,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
                 if s_kept >= s_alt1 and s_kept >= s_alt2:
                     w_disc = 1.0
                 elif s_kept >= min(s_alt1, s_alt2):
-                    w_disc = 0.30
+                    w_disc = 0.35
                 else:
                     w_disc = 0.05
 
@@ -358,14 +419,21 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
             s_kept = flop_score(opp[0], opp[1], flop_ints)
             s_alt1 = flop_score(opp[0], opp_discard_int, flop_ints)
             s_alt2 = flop_score(opp[1], opp_discard_int, flop_ints)
-            if s_kept < min(s_alt1, s_alt2) and random.random() > 0.10:
+            if s_kept >= s_alt1 and s_kept >= s_alt2:
+                keep_prob = 1.00
+            elif s_kept >= min(s_alt1, s_alt2):
+                keep_prob = 0.35
+            else:
+                keep_prob = 0.05
+            if random.random() > keep_prob:
                 continue
 
         opp_curr = eval_fast(opp + board_ints)
 
         # Action conditioning on turn: passive / standard players rarely bet pure unmade air
         if facing_bet and board_needed == 1 and opp_curr[0] == 0 and not opp_is_maniac:
-            if not has_draw(opp + board_ints) and random.random() > (0.02 if opp_is_station else 0.15):
+            draw_cat, _ = draw_potential(opp + board_ints)
+            if draw_cat not in ('combo', 'flush', 'oesd') and random.random() > (0.02 if opp_is_station else 0.15):
                 continue
 
         c_idx = 0 if my_curr > opp_curr else (1 if my_curr == opp_curr else 2)
@@ -431,7 +499,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, n_samples=220):
             elif s_my == s_opp:
                 wins[i] += 0.5
 
-    best_idx = max(range(3), key=lambda i: wins[i] + 0.0001 * RV.get(hole_strs[i][0], 0))
+    best_idx = max(range(3), key=lambda i: wins[i] + 0.0001 * (12 - RV.get(hole_strs[i][0], 0)))
     best_equity = wins[best_idx] / max(n_samples, 1)
     return hole_strs[best_idx], best_equity
 
@@ -454,11 +522,31 @@ class OpponentModel:
         self.discard_ranks = []
         self.fold_to_raise_count = 0
         self.faced_raise_count = 0
+        self.showdown_river_bets = 0
+        self.showdown_river_bluffs = 0.0
 
-    def update(self, result, opp_discard, history):
+    def update(self, result, opp_discard, history, opp_hole_cards=None, board=None):
         self.hands_seen += 1
         if opp_discard and opp_discard in CARD_TO_INT:
             self.discard_ranks.append(RV.get(opp_discard[0], 7))
+
+        # Showdown river bet & bluff tracking
+        if result == "showdown" and opp_hole_cards and board and len(board) == 5:
+            opp_bet_river = any(
+                h.get("actor") == "opp" and h.get("action") == "raise" and h.get("street") == "river"
+                for h in history
+            )
+            if opp_bet_river:
+                self.showdown_river_bets += 1
+                opp_eval = eval_fast([CARD_TO_INT[c] for c in opp_hole_cards] + [CARD_TO_INT[c] for c in board])
+                opp_cat = opp_eval[0]
+                if opp_cat == 0:
+                    self.showdown_river_bluffs += 1.0
+                elif opp_cat == 1:
+                    max_b_rank = max(CARD_TO_INT[c] >> 2 for c in board)
+                    pair_r = opp_eval[1] - 2
+                    if pair_r < max_b_rank:
+                        self.showdown_river_bluffs += 0.5
 
         preflop_counted = False
         last_actor_was_me_raise = False
@@ -509,6 +597,14 @@ class OpponentModel:
     @property
     def fold_to_raise_pct(self):
         return self.fold_to_raise_count / max(self.faced_raise_count, 1)
+
+    @property
+    def river_bluff_freq(self):
+        if self.is_maniac:
+            return 0.40
+        if self.is_station:
+            return 0.02
+        return (self.showdown_river_bluffs + 0.45) / (self.showdown_river_bets + 3.0)
 
     @property
     def is_station(self):
@@ -586,7 +682,13 @@ class PokerBot:
     def handle_hand_result(self, msg):
         self.cumulative_net += msg.get("net", 0)
         self.hands_remaining -= 1
-        self.opp_model.update(msg.get("result"), msg.get("opp_discard"), msg.get("history", []))
+        self.opp_model.update(
+            msg.get("result"),
+            msg.get("opp_discard"),
+            msg.get("history", []),
+            opp_hole_cards=msg.get("opp_hole_cards"),
+            board=msg.get("board", [])
+        )
 
     # ---- Discard Request ----
 
@@ -627,12 +729,12 @@ class PokerBot:
         history = req.get("history", [])
         is_button = (self.seat == "button")
 
-        # Preflop Equity Simulation with Duplicate-Leg Caching
-        cache_key = tuple(sorted(self.hole_cards))
+        # Preflop Equity Simulation with Canonical Equivalence Class Caching
+        cache_key = fast_canon_key(self.hole_cards)
         if cache_key in self.preflop_cache:
             eq = self.preflop_cache[cache_key]
         else:
-            n_sims = self.get_sim_budget(base=140)
+            n_sims = self.get_sim_budget(base=160)
             eq = simulate_preflop_equity(self.hole_cards, n_sims)
             self.preflop_cache[cache_key] = eq
 
@@ -651,7 +753,9 @@ class PokerBot:
         # --- Strong Hands (eq >= 0.55) ---
         if eq >= 0.55:
             # Huge 4-bet or all-in shove: stack preservation
-            if to_call > 30 and not self.opp_model.is_maniac and eq < 0.65:
+            if to_call > 35 and not self.opp_model.is_maniac and eq < 0.68:
+                return self.fold_or_check(legal)
+            if to_call > 20 and not self.opp_model.is_maniac and eq < 0.60:
                 return self.fold_or_check(legal)
             if opp_raises >= 2:
                 return self.call_or_check(legal)
@@ -737,7 +841,7 @@ class PokerBot:
 
         n_samples = self.get_sim_budget(base=220)
 
-        # Unified Flop vs Turn/River Evaluation with Discard Caching
+        # Unified Flop vs Turn/River Evaluation with Discard Caching & Accurate Draw Potential
         has_draw_flag = False
         if street == "flop" and len(hole_ints) == 3:
             if self.cached_flop_ehs is not None:
@@ -751,8 +855,9 @@ class PokerBot:
                 self.cached_flop_ehs = ehs
             made_rank = max(eval_fast(list(p) + board_ints) for p in combinations(hole_ints, 2))
             kept_ints = [c for c in hole_ints if c != CARD_TO_INT[best_card]]
-            has_draw_flag = has_draw(kept_ints + board_ints)
-            ppot = 0.40 if has_draw_flag else 0.15
+            draw_cat, ppot_val = draw_potential(kept_ints + board_ints)
+            has_draw_flag = (draw_cat in ('combo', 'flush', 'oesd'))
+            ppot = ppot_val
         else:
             _, ppot, _, ehs = compute_ehs(
                 hole_ints, board_ints, dead_ints,
@@ -760,10 +865,14 @@ class PokerBot:
                 facing_bet=(to_call > 0),
                 opp_is_station=self.opp_model.is_station,
                 opp_is_maniac=self.opp_model.is_maniac,
+                river_bluff_freq=self.opp_model.river_bluff_freq,
                 n_samples=n_samples
             )
             made_rank = eval_fast(hole_ints + board_ints) if len(board_ints) >= 3 else (0,)
-            has_draw_flag = (street == "turn") and has_draw(hole_ints + board_ints)
+            if street == "turn":
+                draw_cat, ppot_val = draw_potential(hole_ints + board_ints)
+                has_draw_flag = (draw_cat in ('combo', 'flush', 'oesd'))
+                ppot = max(ppot, ppot_val)
 
         hand_cat = made_rank[0]
 

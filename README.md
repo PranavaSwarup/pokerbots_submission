@@ -33,14 +33,29 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 ### 5. Variance-Free Discard Optimization via Common Random Numbers (CRN)
 - Solves discard selection by evaluating all 3 candidate 2-card holdings against the **exact same simulated opponent hands and board runouts** ($Cov(X_A, X_B) > 0$).
 - Eliminates Monte Carlo sample variance between candidate choices, cuts evaluation runtime in half, and increases simulation fidelity ($N = 220$).
+- Inverted Discard Tiebreaker: Retains higher rank cards for kickers and blockers on ties (`12 - RV[card]`).
 
-### 6. Texture-Dependent Geometric Sizing & Check-Raise Trapping
+### 6. Canonical Equivalence Class Isomorphism (`fast_canon_key`)
+- Compresses the 22,100 preflop 3-card combinations into exactly **1,755 canonical suit-isomorphic equivalence classes** in **~1 µs** per lookup.
+- Maximizes preflop cache hits across the duplicate-deal legs, saving valuable compute for deeper postflop Monte Carlo search.
+
+### 7. Differentiated Draw Potential (`draw_potential`)
+- Distinguishes monster combo draws (12–15 outs, $PPOT \approx 0.50$), flush draws (9 outs, $PPOT \approx 0.36$), open-ended straight draws (8 outs, $PPOT \approx 0.32$), and inside gutshots (4 outs, $PPOT \approx 0.14$).
+- Prevents negative-EV calls on weak inside draws while maximizing aggression and semi-bluff equity with premium draws.
+
+### 8. Showdown River Bluff Tracking & Calibrated Bluff-Catching
+- Exploits revealed `opp_hole_cards` at showdown to observe opponent river betting ranges directly.
+- Formulates an empirical Bayesian posterior for river bluff frequency:
+  $$\text{Bluff Freq} = \frac{\text{showdown\_river\_bluffs} + 0.45}{\text{showdown\_river\_bets} + 3.0}$$
+- Dynamically conditions river Bayesian range enumeration against habitual bluffers vs zero-bluff stations.
+
+### 9. Texture-Dependent Geometric Sizing & Check-Raise Trapping
 - **Texture-Dependent Sizing**: Analyzes board connectivity and suitedness (`is_board_wet`). On wet boards, bet sizes scale up (+0.10) to 50–70% pot to deny equity to draws; on dry boards, bet sizes scale down (-0.05) to 33% pot for optimal pot control and cheap semi-bluffs.
 - **Scare-Card River Bluffing**: On the river, bluffs are only fired when a genuine scare card falls (`is_river_scare_card` detects completed 3-flushes or 4-straights) against opponents who fold (`fold_to_raise_pct > 0.35`). On brick runouts, the bot concedes cheaply, eliminating river chip leaks.
 - **Check-Raise Trapping**: When Out of Position postflop holding monster equity ($\ge 85\%$) against aggressive opponents, checks first to induce bluffs and extract maximum chips via check-raises.
 - **Disciplined River & Preflop Stack Preservation**: Zero hero-calls against passive opponents (calling stations never bluff the river). Folds marginal holdings to 4-bets and all-in shoves to protect the stack in duplicate deals. Medium hands check behind on the river to realize showdown value. Calibrated bluff-catching pot-odds margins against maniacs.
 
-### 7. Dynamic Time-Bank Safety Controller
+### 10. Dynamic Time-Bank Safety Controller
 - Continuously calculates per-decision time budgets:
   $$\text{Budget} = \frac{\text{Time Left} - 2.5\text{s}}{\text{Hands Remaining} \times 3}$$
 - Automatically scales Monte Carlo sample counts, guaranteeing zero timeouts or forfeits even on a throttled 1 vCPU evaluation environment.
@@ -53,10 +68,10 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `random_bot.py`** | Stage 1 (400 hands) | **+8,981** | **Win (Capped +400)** | **5.53 s** / 30.0 s | **0** |
-| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+11,244** | **Win (Capped +400)** | **8.40 s** / 30.0 s | **0** |
-| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+23,663** | **Win (Capped +1000)** | **45.57 s** / 75.0 s | **0** |
-| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±595** | **Near-Equilibrium** | **13.3 s** / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 1 (400 hands) | **+9,859** | **Win (Capped +400)** | **5.69 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+13,143** | **Win (Capped +400)** | **10.59 s** / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+21,225** | **Win (Capped +1000)** | **43.14 s** / 75.0 s | **0** |
+| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±434** | **Near-Equilibrium** | **17.4 s** / 30.0 s | **0** |
 
 ---
 

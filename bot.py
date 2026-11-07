@@ -553,11 +553,26 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
     attempts = 0
     max_attempts = n_samples * 4
 
+    opp_pool = None
+    if opp_is_rank_discarder and disc_rv != -1:
+        qual = [c for c in avail if (c >> 2) >= disc_rv]
+        if len(qual) >= 2:
+            opp_pool = qual
+
     while valid_samples < n_samples and attempts < max_attempts:
         attempts += 1
-        sampled = random.sample(avail, 2 + board_needed)
-        opp = sampled[:2]
-        runout = sampled[2:]
+        if opp_pool is not None and random.random() < 0.95:
+            opp = random.sample(opp_pool, 2)
+            rem = [c for c in avail if c != opp[0] and c != opp[1]]
+            runout = random.sample(rem, board_needed)
+        else:
+            sampled = random.sample(avail, 2 + board_needed)
+            opp = sampled[:2]
+            runout = sampled[2:]
+            if opp_is_rank_discarder and disc_rv != -1:
+                if min(opp[0] >> 2, opp[1] >> 2) < disc_rv:
+                    if random.random() > 0.05:
+                        continue
 
         if opp_discard_int is not None and not opp_is_maniac:
             pf_score = fast_preflop_score([opp[0], opp[1], opp_discard_int])
@@ -566,11 +581,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
             elif opp_raises_preflop == 0 and pf_score >= 120 and random.random() < 0.75:
                 continue
 
-        if opp_is_rank_discarder and disc_rv != -1:
-            if min(opp[0] >> 2, opp[1] >> 2) < disc_rv:
-                if random.random() > 0.05:
-                    continue
-        elif opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
+        if opp_pool is None and opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
             s_kept = flop_score(opp[0], opp[1], flop_ints)
             s_alt1 = flop_score(opp[0], opp_discard_int, flop_ints)
             s_alt2 = flop_score(opp[1], opp_discard_int, flop_ints)
@@ -657,6 +668,8 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
 
         # Preflop action conditioning: if opponent raised preflop, reject weak uncoordinated trash
         if opp_raises_preflop >= 1 and fast_preflop_score(opp3) < 55 and random.random() < 0.75:
+            continue
+        elif opp_raises_preflop == 0 and fast_preflop_score(opp3) >= 120 and random.random() < 0.70:
             continue
 
         valid_samples += 1
@@ -1170,6 +1183,9 @@ class PokerBot:
             # Check-raise trap: If OOP on flop/turn against aggressive bettor, check first
             if to_call == 0 and self.seat == "big_blind" and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and street in ("flop", "turn") and random.random() < 0.75:
                 return {"type": "action", "action": "check"}
+            # In-position slow-play on dry flop boards vs aggressive opponents:
+            if to_call == 0 and self.seat == "button" and street == "flop" and not is_board_wet(board_ints) and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and random.random() < 0.30:
+                return {"type": "action", "action": "check"}
             if "raise" in legal and raises_left > 0:
                 if street == "river" and ehs >= 0.95 and self.opp_model.is_station:
                     sizing = 1.00
@@ -1196,7 +1212,7 @@ class PokerBot:
             else:
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
-                if street == "river" and to_call > 50 and not self.opp_model.is_maniac and hand_cat < 2:
+                if street == "river" and to_call > 50 and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22 and hand_cat < 2:
                     return self.fold_or_check(legal)
                 if street in ("flop", "turn") and "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
                     if ehs >= 0.76 and (to_call <= 18 or self.opp_model.is_station or self.opp_model.is_maniac):
@@ -1232,7 +1248,7 @@ class PokerBot:
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
                 # River polarized over-bet / all-in shove defense:
-                if street == "river" and (to_call > 50 or to_call > pot * 1.25) and not self.opp_model.is_maniac:
+                if street == "river" and (to_call > 50 or to_call > pot * 1.25) and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22:
                     v_floor = board_value_floor(board_ints)
                     if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
                         return self.fold_or_check(legal)
@@ -1269,6 +1285,11 @@ class PokerBot:
                             return self.call_or_check(legal)
                     return self.fold_or_check(legal)
                 if street == "turn":
+                    # Semi-bluff raise turn with combo draws facing single bet vs folders
+                    if "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
+                        if draw_cat == 'combo' and to_call <= 18 and self.opp_model.fold_to_raise_pct > 0.45 and not self.opp_model.is_station:
+                            if random.random() < 0.40:
+                                return self.build_raise(req, 0.60)
                     if ehs >= pot_odds:
                         return self.call_or_check(legal)
                     if to_call <= 22 and spr > 1.8 and (ehs + ppot * 0.20) >= pot_odds:
@@ -1294,6 +1315,9 @@ class PokerBot:
                 return {"type": "action", "action": "check"}
             else:
                 if ehs >= pot_odds:
+                    return self.call_or_check(legal)
+                # In-Position Flop Float: see opponent's discard and capture positional advantage
+                if street == "flop" and self.seat == "button" and to_call <= 3 and ehs >= 0.18 and not self.opp_model.is_station:
                     return self.call_or_check(legal)
                 if to_call <= 2 and pot >= 8 and random.random() < 0.25:
                     return self.call_or_check(legal)

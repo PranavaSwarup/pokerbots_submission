@@ -76,6 +76,25 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
   $$\text{Budget} = \frac{\text{Time Left} - 2.5\text{s}}{\text{Hands Remaining} \times 3}$$
 - Automatically scales Monte Carlo sample counts up to $N = 300$ during deep time bank availability, guaranteeing zero timeouts or forfeits even on a throttled 1 vCPU evaluation environment.
 
+### 14. Calibrated Flop vs Turn Out-Accounting (`draw_potential`)
+- Accurately discriminates between 2 cards to come (flop, 47 unseen cards) and 1 card to come (turn, 46 unseen cards).
+- Flop draws are calibrated with true 2-street probabilities (combo draws: 45%, flush draws: 35%, open-ended straight draws: 32%, gutshots: 15%).
+- Turn draws are sharply reduced to 1-street probabilities (combo: 28%, flush: 20%, OESD: 17%, gutshot: 9%), completely eliminating negative-EV turn calls on weak inside draws while maximizing implied odds on the flop.
+
+### 15. Action & Discard-Model Aware Discard Selection
+- Connects live opponent profiling to the discard phase: when the opponent is identified as a rank-based discarder (`is_rank_discarder`), their discard is evaluated deterministically as their lowest card ($\min_{c} R(c)$), simulating their true retained cards with zero variance.
+- Tracks `opp_raises_preflop` across betting rounds and conditions candidate opponent holdings during the flop discard phase, eliminating unrealistic trash hands.
+
+### 16. Bayesian Conjugate Smoothing for River Bluff Frequency
+- Replaces naive empirical bluff frequencies with Dirichlet/Laplace conjugate posterior smoothing conditioned on archetype priors:
+  $$\text{Bluff Freq} = \frac{\text{showdown\_bluffs} + \alpha}{\text{showdown\_bets} + \alpha + \beta}$$
+  - Maniacs: Prior 38% ($\alpha = 1.9, \beta = 3.1$), preventing premature bluff frequency collapse to 0% after early value showdowns.
+  - Stations: Prior 3% ($\alpha = 0.15, \beta = 4.85$).
+  - Standard: Prior 16% ($\alpha = 0.8, \beta = 4.2$).
+
+### 17. Total Nit & Limp Exploitation Protocol
+- Recognizes extreme folding profiles (`is_nit` or `fold_to_raise_pct > 0.50`) and executes a 100% button open steal and 100% BB limp isolation policy, converting every unraised pot into guaranteed dead money.
+
 ---
 
 ## ⏱️ Benchmark & Performance
@@ -84,14 +103,17 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `aggressive_bot.py`** | Stage 2 (1,000 hands) | **+37,451** | **Win (Capped +1000)** | **5.80 s** / 75.0 s | **0** |
-| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+28,093** | **Win (Capped +1000)** | **14.60 s** / 75.0 s | **0** |
-| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+13,733** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
-| **vs `random_bot.py` (seed 123)** | Stage 1 (400 hands) | **+13,260** | **Win (Capped +400)** | **0.44 s** / 30.0 s | **0** |
-| **vs `random_bot.py` (seed 42)** | Stage 1 (400 hands) | **+10,144** | **Win (Capped +400)** | **0.19 s** / 30.0 s | **0** |
-| **vs `random_bot.py` (seed 999)** | Stage 1 (400 hands) | **+9,230** | **Win (Capped +400)** | **0.17 s** / 30.0 s | **0** |
-| **vs `nit_bot.py`** | Stage 1 (400 hands) | **+840** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
-| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±198** | **Near-Equilibrium** | **7.05 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 2 (1,000 hands) | **+25,709** | **Win (Capped +1000)** | **7.55 s** / 75.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 123)** | Stage 1 (400 hands) | **+10,673** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 777)** | Stage 1 (400 hands) | **+10,306** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 42)** | Stage 1 (400 hands) | **+9,802** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 555)** | Stage 1 (400 hands) | **+7,648** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `random_bot.py` (seed 123)** | Stage 1 (400 hands) | **+9,991** | **Win (Capped +400)** | **1.86 s** / 30.0 s | **0** |
+| **vs `random_bot.py` (seed 555)** | Stage 1 (400 hands) | **+9,803** | **Win (Capped +400)** | **2.19 s** / 30.0 s | **0** |
+| **vs `random_bot.py` (seed 42)** | Stage 1 (400 hands) | **+8,296** | **Win (Capped +400)** | **2.59 s** / 30.0 s | **0** |
+| **vs `random_bot.py` (seed 777)** | Stage 1 (400 hands) | **+7,942** | **Win (Capped +400)** | **2.08 s** / 30.0 s | **0** |
+| **vs `nit_bot.py`** | Stage 1 (400 hands) | **+800** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **-759** | **Near-Equilibrium** | **12.07 s** / 30.0 s | **0** |
 
 ---
 

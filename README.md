@@ -130,6 +130,10 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 ### 26. Board-Paired River Air Identification
 - Inspects revealed showdown hole cards on paired boards to determine if the pair belonged to the opponent or the community cards. If the pair was on board and the opponent held no pair, classifies the bet as 100% pure bluff rather than weak value.
 
+### 27. Paired & Two-Pair Board Community-Air Bayesian Action Weighting
+- On paired and two-pair board textures, verifies whether the candidate holding's pair ranks match the hole cards or reside entirely on the board.
+- When an opponent bets holding board-playing unmade air, assigns action weights strictly to their empirical bluff frequency ($w_{\text{act}} = \text{bluff\_freq}$) rather than mistaking board pairs for genuine value bets ($w_{\text{act}} = 1.0$), eliminating false-positive opponent value assignments across turn and river calculations.
+
 ---
 
 ## ⏱️ Benchmark & Performance
@@ -140,11 +144,11 @@ Tested under official local engine conditions (`engine.py`):
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **vs `aggressive_bot.py`** | Stage 2 (1,000 hands) | **+31,425** | **Win (Capped +1000)** | **5.44 s** / 75.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 123)** | Stage 1 (400 hands) | **+12,061** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py` (seed 42)** | Stage 1 (400 hands) | **+11,650** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 777)** | Stage 1 (400 hands) | **+10,786** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 555)** | Stage 1 (400 hands) | **+9,466** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
-| **vs `aggressive_bot.py` (seed 42)** | Stage 1 (400 hands) | **+9,443** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |
 | **vs `random_bot.py` (seed 555)** | Stage 1 (400 hands) | **+9,322** | **Win (Capped +400)** | **4.28 s** / 30.0 s | **0** |
-| **vs `random_bot.py` (seed 42)** | Stage 1 (400 hands) | **+8,712** | **Win (Capped +400)** | **2.41 s** / 30.0 s | **0** |
+| **vs `random_bot.py` (seed 42)** | Stage 1 (400 hands) | **+8,712** | **Win (Capped +400)** | **1.49 s** / 30.0 s | **0** |
 | **vs `random_bot.py` (seed 777)** | Stage 1 (400 hands) | **+7,767** | **Win (Capped +400)** | **4.39 s** / 30.0 s | **0** |
 | **vs `random_bot.py` (seed 123)** | Stage 1 (400 hands) | **+5,457** | **Win (Capped +400)** | **3.20 s** / 30.0 s | **0** |
 | **vs `nit_bot.py`** | Stage 1 (400 hands) | **+804** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |

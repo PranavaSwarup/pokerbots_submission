@@ -509,25 +509,38 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
 
             s_opp = eval_fast([o1, o2] + board_ints)
             cat = s_opp[0]
+            opp_ranks = {o1 >> 2, o2 >> 2}
 
             # Texture-conditioned action weighting
             if facing_bet:
                 if cat >= v_floor:
-                    w_act = 1.0
+                    if cat == 2 and (s_opp[1] - 2) not in opp_ranks and (s_opp[2] - 2) not in opp_ranks:
+                        # Board has two pair; opponent holds no pair in hand (board-playing air)
+                        w_act = bluff_freq
+                    else:
+                        w_act = 1.0
                 elif cat >= 2 and v_floor > 2:
                     w_act = 0.05  # Highly unlikely to bet vulnerable 2-pair for value on dangerous textures
                 elif cat == 1:
                     pair_r = s_opp[1] - 2
-                    w_act = 0.80 if (pair_r >= max_board_rank and v_floor == 2) else 0.05
+                    if pair_r not in opp_ranks:
+                        # Board is paired; opponent holds pure unmade air
+                        w_act = bluff_freq
+                    else:
+                        w_act = 0.80 if (pair_r >= max_board_rank and v_floor == 2) else 0.05
                 else:
                     w_act = bluff_freq
             else:
                 if cat >= v_floor:
                     w_act = 0.20  # Trapping / pot control
                 elif cat >= 2:
-                    w_act = 0.70
+                    if cat == 2 and (s_opp[1] - 2) not in opp_ranks and (s_opp[2] - 2) not in opp_ranks:
+                        w_act = 1.00  # Board two-pair air checks
+                    else:
+                        w_act = 0.70
                 elif cat == 1:
-                    w_act = 0.90
+                    pair_r = s_opp[1] - 2
+                    w_act = 1.00 if pair_r not in opp_ranks else 0.90
                 else:
                     w_act = 1.00
 
@@ -598,8 +611,9 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
 
         # Action conditioning on turn: passive / standard players rarely bet pure unmade air
         if facing_bet and board_needed == 1 and not opp_is_maniac:
-            if opp_curr[0] == 0:
-                draw_cat, _ = draw_potential(opp + board_ints)
+            is_opp_air = (opp_curr[0] == 0) or (opp_curr[0] == 1 and (opp_curr[1] - 2) not in {opp[0] >> 2, opp[1] >> 2})
+            if is_opp_air:
+                draw_cat, _ = draw_potential(opp + board_ints, is_turn=True)
                 bluff_p = river_bluff_freq if river_bluff_freq is not None else (0.02 if opp_is_station else 0.15)
                 if draw_cat not in ('combo', 'flush', 'oesd') and random.random() > bluff_p:
                     continue

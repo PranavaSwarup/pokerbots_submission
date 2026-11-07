@@ -1069,12 +1069,17 @@ class PokerBot:
         # --- Strong Hands (eq >= 0.55) ---
         if eq >= 0.55:
             # Huge 4-bet or all-in shove: stack preservation
-            if to_call > 35 and not self.opp_model.is_maniac and eq < 0.68:
-                return self.fold_or_check(legal)
-            if to_call > 20 and not self.opp_model.is_maniac and eq < 0.60:
-                return self.fold_or_check(legal)
+            if to_call > 35:
+                min_eq = 0.62 if self.opp_model.is_maniac else 0.68
+                if eq < min_eq:
+                    return self.fold_or_check(legal)
+            if to_call > 20:
+                min_eq = 0.58 if self.opp_model.is_maniac else 0.60
+                if eq < min_eq:
+                    return self.fold_or_check(legal)
             if opp_raises >= 2:
-                if eq < 0.62 and not self.opp_model.is_maniac:
+                min_eq = 0.58 if self.opp_model.is_maniac else 0.62
+                if eq < min_eq:
                     return self.fold_or_check(legal)
                 return self.call_or_check(legal)
             # Flat single preflop opens with medium-strong holdings to control pot size
@@ -1129,7 +1134,7 @@ class PokerBot:
                 elif self.opp_model.fold_to_raise_pct > 0.50:
                     open_freq = 0.75
                 elif self.opp_model.is_station:
-                    open_freq = 0.30
+                    open_freq = 0.00
                 if "raise" in legal and self.roll("pf:btn_marginal") < open_freq:
                     return self.build_raise(req, 0.25)
                 return self.call_or_check(legal)
@@ -1290,7 +1295,7 @@ class PokerBot:
                     if hand_cat < v_floor:
                         return {"type": "action", "action": "check"}
                     if "raise" in legal and raises_left > 0:
-                        sizing = 0.65 if (self.opp_model.is_maniac or self.opp_model.is_station) else 0.45
+                        sizing = 0.75 if self.opp_model.is_station else (0.65 if self.opp_model.is_maniac else 0.45)
                         return self.build_raise(req, sizing)
                     return {"type": "action", "action": "check"}
                 if "raise" in legal and raises_left > 0:
@@ -1365,8 +1370,8 @@ class PokerBot:
                     cbet_freq = 1.00
                 elif self.opp_model.fold_to_raise_pct > 0.55:
                     cbet_freq = 0.85
-                elif self.opp_model.is_station:
-                    cbet_freq *= 0.5
+                elif self.opp_model.is_station or self.opp_model.fold_to_raise_pct < 0.25:
+                    cbet_freq *= 0.40
                 if "raise" in legal and street != "river" and self.roll(f"{street}:cbet") < cbet_freq:
                     return self.build_raise(req, 0.38)
                 return {"type": "action", "action": "check"}
@@ -1374,6 +1379,8 @@ class PokerBot:
                 if street == "river" and to_call > 0:
                     v_floor = board_value_floor(board_ints)
                     if spr <= 0.35 and to_call <= 15 and ehs >= pot_odds:
+                        return self.call_or_check(legal)
+                    if to_call <= 5 and pot >= 18 and ehs >= pot_odds:
                         return self.call_or_check(legal)
                     if self.opp_model.is_maniac or self.opp_model.river_bluff_freq >= 0.25:
                         if hand_cat >= 1 and ehs >= pot_odds + 0.02:
@@ -1398,7 +1405,7 @@ class PokerBot:
                     return self.call_or_check(legal)
                 # Flop semi-bluff raise with combo/nut draws facing a single bet
                 if "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
-                    if (draw_cat == 'combo' or (has_draw_flag and ehs >= 0.40)) and to_call <= 15 and not self.opp_model.is_station:
+                    if (draw_cat == 'combo' or (has_draw_flag and ehs >= 0.40)) and to_call <= 15 and not self.opp_model.is_station and self.opp_model.fold_to_raise_pct >= 0.30:
                         if self.roll("flop:semi_raise") < 0.40:
                             return self.build_raise(req, 0.55)
                 if spr > 2.0 and (ehs + ppot * 0.28) >= pot_odds:
@@ -1435,7 +1442,7 @@ class PokerBot:
     # ---- Exploitative Adjustments ----
 
     def should_bluff(self, street, board_ints=None, checked_through_prev=False):
-        if self.opp_model.is_station:
+        if self.opp_model.is_station or self.opp_model.fold_to_raise_pct < 0.25:
             return False
         if street == "river":
             # On the river, only bluff on scare-card runouts against non-stations
@@ -1479,7 +1486,9 @@ class PokerBot:
                 else:
                     target = 5
             else:
-                if sizing >= 0.70:
+                if self.opp_model.is_station and sizing >= 0.70:
+                    target = int(opp_bet * 3.5)
+                elif sizing >= 0.70:
                     target = int(opp_bet * 2.5) if opp_bet >= 10 else opp_bet * 3
                 elif sizing >= 0.45:
                     target = opp_bet * 3

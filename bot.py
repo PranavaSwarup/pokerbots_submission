@@ -242,6 +242,40 @@ def has_draw(c_ints):
     return False
 
 
+def is_board_wet(board_ints):
+    """Detects wet, coordinated board textures (flush draws or connected straights)."""
+    if len(board_ints) < 3:
+        return False
+    suits = [0] * 4
+    ranks = []
+    for c in board_ints:
+        suits[c & 3] += 1
+        ranks.append(c >> 2)
+    if max(suits) >= 3:
+        return True
+    ranks.sort()
+    gaps = [ranks[i + 1] - ranks[i] for i in range(len(ranks) - 1)]
+    connected = sum(1 for g in gaps if g <= 2)
+    return (max(suits) >= 2 and connected >= 2) or (connected >= 3)
+
+
+def is_river_scare_card(board_ints):
+    """Detects if 5-card board has 3+ flush cards or 4 to a straight."""
+    if len(board_ints) < 5:
+        return False
+    suits = [0] * 4
+    mask = 0
+    for c in board_ints:
+        suits[c & 3] += 1
+        mask |= (1 << (c >> 2))
+    if max(suits) >= 3:
+        return True
+    for r in range(12, 3, -1):
+        if bin(mask & (0x1F << (r - 4))).count('1') >= 4:
+            return True
+    return bin(mask & 0x100F).count('1') >= 4
+
+
 def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_ints=None,
                 facing_bet=False, opp_is_station=False, opp_is_maniac=False, n_samples=200):
     """
@@ -828,7 +862,7 @@ class PokerBot:
         # 5. WEAK / MARGINAL (EHS >= 0.20)
         if ehs >= 0.20:
             if to_call == 0:
-                if "raise" in legal and self.should_bluff(street):
+                if "raise" in legal and self.should_bluff(street, board_ints):
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
@@ -838,24 +872,32 @@ class PokerBot:
 
         # 6. PURE AIR
         if to_call == 0:
-            if "raise" in legal and self.should_bluff(street):
+            if "raise" in legal and self.should_bluff(street, board_ints):
                 return self.build_raise(req, 0.45)
             return {"type": "action", "action": "check"}
         return self.fold_or_check(legal)
 
     # ---- Exploitative Adjustments ----
 
-    def should_bluff(self, street):
+    def should_bluff(self, street, board_ints=None):
         if self.opp_model.is_station:
             return False
-        freq = 0.20 if street != "river" else 0.10
+        if street == "river":
+            # On the river, only bluff on scare-card runouts against non-stations
+            if board_ints and not is_river_scare_card(board_ints):
+                return False
+            freq = 0.12 if self.opp_model.fold_to_raise_pct > 0.40 else 0.05
+        else:
+            freq = 0.20
         if self.opp_model.is_nit:
             freq *= 1.5
+        if self.opp_model.fold_to_raise_pct > 0.50:
+            freq *= 1.3
         if self.cumulative_net > 50:
             freq *= 0.5
         return random.random() < freq
 
-    # ---- Professional Heads-Up Bet & Raise Sizing ----
+    # ---- Professional Heads-Up Bet & Raise Sizing with Texture Adaptation ----
 
     def build_raise(self, req, sizing):
         if "raise" not in req["legal_actions"]:
@@ -883,14 +925,19 @@ class PokerBot:
                     target = mn
         else:
             pot_after_call = pot + to_call
-            if sizing >= 0.90:
-                target = mx
-            elif sizing >= 0.70:
-                target = opp_bet + int(pot_after_call * 0.85)
-            elif sizing >= 0.50:
-                target = opp_bet + int(pot_after_call * 0.60)
-            elif sizing >= 0.30:
-                target = opp_bet + int(pot_after_call * 0.35)
+            board_ints = [CARD_TO_INT[c] for c in req.get("board", [])]
+            wet = is_board_wet(board_ints)
+            # Texture scaling: wet boards charge draws (+0.10); dry boards pot control (-0.05)
+            eff_sizing = min(1.0, sizing + 0.10) if wet else max(0.25, sizing - 0.05)
+
+            if eff_sizing >= 0.85:
+                target = mx if (eff_sizing >= 0.95) else (opp_bet + int(pot_after_call * 0.85))
+            elif eff_sizing >= 0.65:
+                target = opp_bet + int(pot_after_call * 0.70)
+            elif eff_sizing >= 0.45:
+                target = opp_bet + int(pot_after_call * 0.50)
+            elif eff_sizing >= 0.25:
+                target = opp_bet + int(pot_after_call * 0.33)
             else:
                 target = mn
 

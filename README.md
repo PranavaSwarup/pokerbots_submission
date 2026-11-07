@@ -34,9 +34,9 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - Solves discard selection by evaluating all 3 candidate 2-card holdings against the **exact same simulated opponent hands and board runouts** ($Cov(X_A, X_B) > 0$).
 - Eliminates Monte Carlo sample variance between candidate choices, cuts evaluation runtime in half, and increases simulation fidelity ($N = 220$).
 
-### 6. Professional Heads-Up Bet Sizing & Check-Raise Trapping
-- **Preflop Sizing**: Calibrated 2.5x BB button opens (5 chips), 3x 3-bets (12-15 chips), and 2.5x 4-bets (30 chips).
-- **Postflop Sizing**: Geometric pot scaling (33% dry flop, 60% wet flop, 65% turn, 75%–100% / shove on river).
+### 6. Texture-Dependent Geometric Sizing & Check-Raise Trapping
+- **Texture-Dependent Sizing**: Analyzes board connectivity and suitedness (`is_board_wet`). On wet boards, bet sizes scale up (+0.10) to 50–70% pot to deny equity to draws; on dry boards, bet sizes scale down (-0.05) to 33% pot for optimal pot control and cheap semi-bluffs.
+- **Scare-Card River Bluffing**: On the river, bluffs are only fired when a genuine scare card falls (`is_river_scare_card` detects completed 3-flushes or 4-straights) against opponents who fold (`fold_to_raise_pct > 0.35`). On brick runouts, the bot concedes cheaply, eliminating river chip leaks.
 - **Check-Raise Trapping**: When Out of Position postflop holding monster equity ($\ge 85\%$) against aggressive opponents, checks first to induce bluffs and extract maximum chips via check-raises.
 - **Disciplined River & Preflop Stack Preservation**: Zero hero-calls against passive opponents (calling stations never bluff the river). Folds marginal holdings to 4-bets and all-in shoves to protect the stack in duplicate deals. Medium hands check behind on the river to realize showdown value. Calibrated bluff-catching pot-odds margins against maniacs.
 
@@ -53,9 +53,9 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `random_bot.py`** | Stage 1 (400 hands) | **+8,165** | **Win (Capped +400)** | **7.20 s** / 30.0 s | **0** |
-| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+11,646** | **Win (Capped +400)** | **10.61 s** / 30.0 s | **0** |
-| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+19,103** | **Win (Capped +1000)** | **41.90 s** / 75.0 s | **0** |
+| **vs `random_bot.py`** | Stage 1 (400 hands) | **+8,981** | **Win (Capped +400)** | **5.53 s** / 30.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+11,244** | **Win (Capped +400)** | **8.40 s** / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+23,663** | **Win (Capped +1000)** | **45.57 s** / 75.0 s | **0** |
 | **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±595** | **Near-Equilibrium** | **13.3 s** / 30.0 s | **0** |
 
 ---

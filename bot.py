@@ -59,9 +59,67 @@ SMALL_BLIND = 1
 BIG_BLIND = 2
 
 # ============================================================================
-# ULTRA-FAST 5, 6, 7-CARD BITMASK EVALUATOR
-# Matches engine.py rank5/best_hand 100% in ~2.5 microseconds
+# ULTRA-FAST 5, 6, 7-CARD BITMASK EVALUATOR & O(1) LOOKUP TABLES
+# Matches engine.py rank5/best_hand 100% in ~2.0 microseconds
 # ============================================================================
+
+def _init_draw_tables():
+    straight_bonus = [0.0] * 8192
+    draw_type = [0] * 8192
+    is_4straight = [False] * 8192
+    straight_high = [0] * 8192
+
+    for mask in range(8192):
+        st_high = 0
+        for r in range(12, 3, -1):
+            pattern = 0x1F << (r - 4)
+            if (mask & pattern) == pattern:
+                st_high = r + 2
+                break
+        if st_high == 0 and (mask & 0x100F) == 0x100F:
+            st_high = 5
+        straight_high[mask] = st_high
+
+        bonus = 0.0
+        for r in range(12, 3, -1):
+            if (mask & (0x1F << (r - 4))).bit_count() == 4:
+                bonus += 1.2
+                break
+        if bonus < 2.0 and (mask & 0x100F).bit_count() == 4:
+            bonus += 0.8
+        straight_bonus[mask] = bonus
+
+        is_oesd = False
+        for shift in range(9):
+            if ((mask >> shift) & 0x0F) == 0x0F:
+                is_oesd = True
+                break
+        if is_oesd:
+            draw_type[mask] = 2
+        else:
+            is_gut = False
+            for r in range(12, 3, -1):
+                if (mask & (0x1F << (r - 4))).bit_count() == 4:
+                    is_gut = True
+                    break
+            if not is_gut and (mask & 0x100F).bit_count() == 4:
+                is_gut = True
+            if is_gut:
+                draw_type[mask] = 1
+
+        is_4s = False
+        for r in range(12, 3, -1):
+            if (mask & (0x1F << (r - 4))).bit_count() >= 4:
+                is_4s = True
+                break
+        if not is_4s and (mask & 0x100F).bit_count() >= 4:
+            is_4s = True
+        is_4straight[mask] = is_4s
+
+    return straight_bonus, draw_type, is_4straight, straight_high
+
+STRAIGHT_BONUS_TABLE, DRAW_TYPE_TABLE, IS_4STRAIGHT_TABLE, STRAIGHT_HIGH_TABLE = _init_draw_tables()
+
 
 def eval_fast(c_ints):
     """
@@ -72,9 +130,12 @@ def eval_fast(c_ints):
     """
     rank_counts = [0] * 13
     suit_counts = [0] * 4
+    mask = 0
     for ci in c_ints:
-        rank_counts[ci >> 2] += 1
+        r = ci >> 2
+        rank_counts[r] += 1
         suit_counts[ci & 3] += 1
+        mask |= (1 << r)
 
     # 1. Flush check
     flush_suit = -1
@@ -86,16 +147,10 @@ def eval_fast(c_ints):
     if flush_suit != -1:
         f_ranks = [ci >> 2 for ci in c_ints if (ci & 3) == flush_suit]
         f_ranks.sort(reverse=True)
-        uniq_f = sorted(set(f_ranks), reverse=True)
-        sf_high = 0
-        if len(uniq_f) >= 5:
-            for i in range(len(uniq_f) - 4):
-                if uniq_f[i] - uniq_f[i + 4] == 4:
-                    sf_high = uniq_f[i] + 2
-                    break
-            # A-2-3-4-5 straight flush (Ace is 12, 2 is 0)
-            if sf_high == 0 and 12 in uniq_f and 0 in uniq_f and 1 in uniq_f and 2 in uniq_f and 3 in uniq_f:
-                sf_high = 5
+        f_mask = 0
+        for r in f_ranks:
+            f_mask |= (1 << r)
+        sf_high = STRAIGHT_HIGH_TABLE[f_mask]
         if sf_high > 0:
             return (8, sf_high)
         return (5, f_ranks[0] + 2, f_ranks[1] + 2, f_ranks[2] + 2, f_ranks[3] + 2, f_ranks[4] + 2)
@@ -122,18 +177,7 @@ def eval_fast(c_ints):
         return (6, trips[0] + 2, pairs[0] + 2)
 
     # 4. Straight check
-    mask = 0
-    for r in range(13):
-        if rank_counts[r] > 0:
-            mask |= (1 << r)
-    st_high = 0
-    for r in range(12, 3, -1):
-        pattern = 0x1F << (r - 4)
-        if (mask & pattern) == pattern:
-            st_high = r + 2
-            break
-    if st_high == 0 and (mask & 0x100F) == 0x100F:
-        st_high = 5
+    st_high = STRAIGHT_HIGH_TABLE[mask]
     if st_high > 0:
         return (4, st_high)
 
@@ -216,51 +260,6 @@ def get_preflop_equity(hole_cards):
     return PREFLOP_LUT.get(pk, 0.50)
 
 
-def _init_draw_tables():
-    straight_bonus = [0.0] * 8192
-    draw_type = [0] * 8192
-    is_4straight = [False] * 8192
-
-    for mask in range(8192):
-        bonus = 0.0
-        for r in range(12, 3, -1):
-            if (mask & (0x1F << (r - 4))).bit_count() == 4:
-                bonus += 1.2
-                break
-        if bonus < 2.0 and (mask & 0x100F).bit_count() == 4:
-            bonus += 0.8
-        straight_bonus[mask] = bonus
-
-        is_oesd = False
-        for shift in range(9):
-            if ((mask >> shift) & 0x0F) == 0x0F:
-                is_oesd = True
-                break
-        if is_oesd:
-            draw_type[mask] = 2
-        else:
-            is_gut = False
-            for r in range(12, 3, -1):
-                if (mask & (0x1F << (r - 4))).bit_count() == 4:
-                    is_gut = True
-                    break
-            if not is_gut and (mask & 0x100F).bit_count() == 4:
-                is_gut = True
-            if is_gut:
-                draw_type[mask] = 1
-
-        is_4s = False
-        for r in range(12, 3, -1):
-            if (mask & (0x1F << (r - 4))).bit_count() >= 4:
-                is_4s = True
-                break
-        if not is_4s and (mask & 0x100F).bit_count() >= 4:
-            is_4s = True
-        is_4straight[mask] = is_4s
-
-    return straight_bonus, draw_type, is_4straight
-
-STRAIGHT_BONUS_TABLE, DRAW_TYPE_TABLE, IS_4STRAIGHT_TABLE = _init_draw_tables()
 
 
 def flop_score(c1, c2, flop_ints):

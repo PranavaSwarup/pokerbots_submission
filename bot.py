@@ -431,7 +431,8 @@ def fast_preflop_score(c_ints):
 
 
 def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_ints=None,
-                facing_bet=False, opp_is_station=False, opp_is_maniac=False, river_bluff_freq=None, n_samples=200):
+                facing_bet=False, opp_is_station=False, opp_is_maniac=False, river_bluff_freq=None,
+                opp_is_rank_discarder=False, n_samples=200):
     """
     Computes Hand Strength (HS), Positive Potential (PPOT), Negative Potential (NPOT),
     and Effective Hand Strength (EHS) = HS * (1 - NPOT) + (1 - HS) * PPOT.
@@ -442,6 +443,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         known.add(opp_discard_int)
     avail = [c for c in FULL_DECK_INTS if c not in known]
     board_needed = 5 - len(board_ints)
+    disc_rv = (opp_discard_int >> 2) if opp_discard_int is not None else -1
 
     # --- RIVER: 5 Board Cards -> Exact Action-Conditioned Enumeration ---
     if board_needed == 0:
@@ -457,21 +459,27 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         v_floor = board_value_floor(board_ints)
 
         alt_scores = None
-        if opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
+        if not opp_is_rank_discarder and opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
             alt_scores = {o: flop_score(o, opp_discard_int, flop_ints) for o in avail}
 
         for o1, o2 in combinations(avail, 2):
             w_disc = 1.0
-            if alt_scores is not None:
+            if opp_is_rank_discarder and disc_rv != -1:
+                # Rank-based discarder: kept cards cannot be lower than the discarded rank
+                if min(o1 >> 2, o2 >> 2) < disc_rv:
+                    w_disc = 0.02
+                else:
+                    w_disc = 1.0
+            elif alt_scores is not None:
                 s_kept = flop_score(o1, o2, flop_ints)
                 s_alt1 = alt_scores[o1]
                 s_alt2 = alt_scores[o2]
                 if s_kept >= s_alt1 and s_kept >= s_alt2:
                     w_disc = 1.0
                 elif s_kept >= min(s_alt1, s_alt2):
-                    w_disc = 0.35
+                    w_disc = 0.40
                 else:
-                    w_disc = 0.05
+                    w_disc = 0.10
 
             s_opp = eval_fast([o1, o2] + board_ints)
             cat = s_opp[0]
@@ -525,16 +533,20 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         opp = sampled[:2]
         runout = sampled[2:]
 
-        if opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
+        if opp_is_rank_discarder and disc_rv != -1:
+            if min(opp[0] >> 2, opp[1] >> 2) < disc_rv:
+                if random.random() > 0.05:
+                    continue
+        elif opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
             s_kept = flop_score(opp[0], opp[1], flop_ints)
             s_alt1 = flop_score(opp[0], opp_discard_int, flop_ints)
             s_alt2 = flop_score(opp[1], opp_discard_int, flop_ints)
             if s_kept >= s_alt1 and s_kept >= s_alt2:
                 keep_prob = 1.00
             elif s_kept >= min(s_alt1, s_alt2):
-                keep_prob = 0.35
+                keep_prob = 0.40
             else:
-                keep_prob = 0.05
+                keep_prob = 0.10
             if random.random() > keep_prob:
                 continue
 
@@ -652,11 +664,21 @@ class OpponentModel:
         self.faced_raise_count = 0
         self.showdown_river_bets = 0
         self.showdown_river_bluffs = 0.0
+        self.opp_rank_discard_count = 0
+        self.opp_discard_showdown_count = 0
 
     def update(self, result, opp_discard, history, opp_hole_cards=None, board=None):
         self.hands_seen += 1
         if opp_discard and opp_discard in CARD_TO_INT:
             self.discard_ranks.append(RV.get(opp_discard[0], 7))
+
+        # Showdown discard analysis: detect if opponent discards lowest rank card
+        if result == "showdown" and opp_hole_cards and opp_discard:
+            self.opp_discard_showdown_count += 1
+            disc_rv = RV.get(opp_discard[0], 0)
+            kept_rvs = [RV.get(c[0], 0) for c in opp_hole_cards]
+            if disc_rv <= min(kept_rvs):
+                self.opp_rank_discard_count += 1
 
         # Showdown river bet & bluff tracking
         if result == "showdown" and opp_hole_cards and board and len(board) == 5:
@@ -727,7 +749,13 @@ class OpponentModel:
         return (self.fold_to_raise_count + 0.4) / (self.faced_raise_count + 1.0)
 
     @property
+    def is_rank_discarder(self):
+        return self.opp_discard_showdown_count >= 2 and self.opp_rank_discard_count == self.opp_discard_showdown_count
+
+    @property
     def river_bluff_freq(self):
+        if self.showdown_river_bets >= 2:
+            return max(0.02, min(0.60, self.showdown_river_bluffs / self.showdown_river_bets))
         if self.is_maniac:
             return 0.40
         if self.is_station:
@@ -736,15 +764,23 @@ class OpponentModel:
 
     @property
     def is_station(self):
-        return self.hands_seen >= 10 and self.vpip_pct > 0.65 and self.af < 0.65
+        return self.hands_seen >= 10 and self.vpip_pct > 0.65 and self.af < 0.65 and self.fold_to_raise_pct < 0.35
 
     @property
     def is_maniac(self):
-        return self.total_actions >= 15 and self.af > 2.0
+        return self.total_actions >= 12 and (self.af > 1.8 or self.pfr_pct > 0.50)
 
     @property
     def is_nit(self):
-        return self.hands_seen >= 10 and self.vpip_pct < 0.32
+        if self.hands_seen < 8:
+            return False
+        if self.vpip_pct < 0.32:
+            return True
+        if self.pfr_pct < 0.08 and self.af < 0.5 and self.fold_to_raise_pct > 0.50:
+            return True
+        if self.faced_raise_count >= 4 and self.fold_to_raise_pct > 0.65:
+            return True
+        return False
 
 
 # ============================================================================
@@ -922,19 +958,37 @@ class PokerBot:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
             if is_button:
-                open_freq = 0.42
+                open_freq = 0.50
                 if self.opp_model.is_nit:
-                    open_freq = 0.75
+                    open_freq = 0.95
                 elif self.opp_model.fold_to_raise_pct > 0.50:
-                    open_freq = 0.60
+                    open_freq = 0.75
                 elif self.opp_model.is_station:
-                    open_freq = 0.25
+                    open_freq = 0.30
                 if "raise" in legal and random.random() < open_freq:
                     return self.build_raise(req, 0.25)
                 return self.call_or_check(legal)
-            return self.call_or_check(legal)
+            else:
+                # Big Blind facing a button limp (to_call == 0):
+                if to_call == 0 and "raise" in legal:
+                    if self.opp_model.is_nit or self.opp_model.fold_to_raise_pct > 0.55:
+                        if random.random() < 0.70:
+                            return self.build_raise(req, 0.30)
+                return self.call_or_check(legal)
 
-        # --- Trash Hands ---
+        # --- Trash Hands (eq < 0.30) ---
+        if is_button and opp_raises == 0:
+            # Exploitative button steals against nits and folding opponents
+            if self.opp_model.is_nit:
+                if "raise" in legal and random.random() < 0.90:
+                    return self.build_raise(req, 0.25)
+            elif self.opp_model.fold_to_raise_pct > 0.55:
+                if "raise" in legal and random.random() < 0.65:
+                    return self.build_raise(req, 0.25)
+            # Limp in position with speculative hands (getting 3:1 pot odds)
+            if eq >= 0.18 and not self.opp_model.is_maniac:
+                return self.call_or_check(legal)
+
         if "check" in legal:
             return {"type": "action", "action": "check"}
         return {"type": "action", "action": "fold"}
@@ -994,6 +1048,7 @@ class PokerBot:
                 opp_is_station=self.opp_model.is_station,
                 opp_is_maniac=self.opp_model.is_maniac,
                 river_bluff_freq=self.opp_model.river_bluff_freq,
+                opp_is_rank_discarder=self.opp_model.is_rank_discarder,
                 n_samples=n_samples
             )
             made_rank = eval_fast(hole_ints + board_ints) if len(board_ints) >= 3 else (0,)
@@ -1071,14 +1126,14 @@ class PokerBot:
                     return {"type": "action", "action": "check"}
                 # Flop / Turn: bet for value & protection, higher in position or against folders
                 bet_freq = 0.75 if self.seat == "button" else 0.55
-                if self.opp_model.fold_to_raise_pct > 0.50:
-                    bet_freq = 0.85
+                if self.opp_model.is_nit or self.opp_model.fold_to_raise_pct > 0.50:
+                    bet_freq = 0.90
                 if "raise" in legal and raises_left > 0 and random.random() < bet_freq:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
-                # River defense against passive players: They never bluff river!
-                if street == "river" and self.opp_model.is_station and hand_cat < 2:
+                # River defense against passive players: They rarely bluff river unless observed
+                if street == "river" and self.opp_model.is_station and self.opp_model.river_bluff_freq <= 0.10 and hand_cat < 2:
                     return self.fold_or_check(legal)
                 # Stack preservation against multiple raises
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
@@ -1101,15 +1156,22 @@ class PokerBot:
                 cbet_freq = 0.55 if self.seat == "button" else 0.30
                 if ppot > 0.30 or has_draw_flag:
                     cbet_freq += 0.20
-                if self.opp_model.is_station:
+                if self.opp_model.is_nit or self.opp_model.fold_to_raise_pct > 0.55:
+                    cbet_freq = 0.85
+                elif self.opp_model.is_station:
                     cbet_freq *= 0.5
                 if "raise" in legal and street != "river" and random.random() < cbet_freq:
                     return self.build_raise(req, 0.38)
                 return {"type": "action", "action": "check"}
             else:
                 if street == "river" and to_call > 0:
-                    if hand_cat >= 1 and ehs >= pot_odds + 0.05:
-                        return self.call_or_check(legal)
+                    v_floor = board_value_floor(board_ints)
+                    if self.opp_model.is_maniac or self.opp_model.river_bluff_freq >= 0.25:
+                        if hand_cat >= 1 and ehs >= pot_odds + 0.02:
+                            return self.call_or_check(legal)
+                    else:
+                        if hand_cat >= 1 and hand_cat >= v_floor and ehs >= pot_odds + 0.05:
+                            return self.call_or_check(legal)
                     return self.fold_or_check(legal)
                 if street == "turn":
                     if ehs >= pot_odds:
@@ -1127,7 +1189,7 @@ class PokerBot:
         # 5. WEAK / MARGINAL (EHS >= 0.20)
         if ehs >= 0.20:
             if to_call == 0:
-                if "raise" in legal and self.should_bluff(street, board_ints):
+                if "raise" in legal and (self.opp_model.is_nit or self.should_bluff(street, board_ints)):
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
@@ -1139,9 +1201,11 @@ class PokerBot:
 
         # 6. PURE AIR
         if to_call == 0:
-            if "raise" in legal and self.should_bluff(street, board_ints):
+            if "raise" in legal and (self.opp_model.is_nit or self.should_bluff(street, board_ints)):
                 return self.build_raise(req, 0.45)
             return {"type": "action", "action": "check"}
+        if street == "river":
+            return self.fold_or_check(legal)
         if ehs >= pot_odds:
             return self.call_or_check(legal)
         return self.fold_or_check(legal)
@@ -1155,16 +1219,14 @@ class PokerBot:
             # On the river, only bluff on scare-card runouts against non-stations
             if board_ints and not is_river_scare_card(board_ints):
                 return False
-            freq = 0.12 if self.opp_model.fold_to_raise_pct > 0.40 else 0.05
+            freq = 0.15 if self.opp_model.fold_to_raise_pct > 0.40 else 0.05
         else:
             freq = 0.20
         if self.opp_model.is_nit:
-            freq *= 1.5
-        if self.opp_model.fold_to_raise_pct > 0.50:
-            freq *= 1.3
-        if self.cumulative_net > 50:
-            freq *= 0.5
-        return random.random() < freq
+            freq *= 1.8
+        elif self.opp_model.fold_to_raise_pct > 0.50:
+            freq *= 1.4
+        return random.random() < min(0.85, freq)
 
     # ---- Professional Heads-Up Bet & Raise Sizing with Texture Adaptation ----
 
@@ -1184,7 +1246,7 @@ class PokerBot:
 
         if street == "preflop":
             if to_call <= 1:
-                target = 5 if sizing >= 0.50 else 4
+                target = 5
             else:
                 if sizing >= 0.70:
                     target = int(opp_bet * 2.5) if opp_bet >= 10 else opp_bet * 3
@@ -1205,10 +1267,8 @@ class PokerBot:
                 target = opp_bet + int(pot_after_call * 0.70)
             elif eff_sizing >= 0.45:
                 target = opp_bet + int(pot_after_call * 0.50)
-            elif eff_sizing >= 0.25:
-                target = opp_bet + int(pot_after_call * 0.33)
             else:
-                target = mn
+                target = opp_bet + max(3, int(pot_after_call * 0.35))
 
         amount = max(mn, min(mx, target))
         if amount >= mx * 0.75:

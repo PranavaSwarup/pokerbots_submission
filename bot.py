@@ -594,8 +594,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
 # OPTIMAL DISCARD SELECTION (Flop with Common Random Numbers)
 # ============================================================================
 
-def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop=0,
-                            opp_is_rank_discarder=False, n_samples=220):
+def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop=0, n_samples=220):
     """
     Selects the card to discard using Common Random Numbers (CRN):
     Evaluates all 3 candidate discards against the EXACT SAME opponent cards
@@ -630,11 +629,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
         valid_samples += 1
         full_b = board_ints + runout
 
-        if opp_is_rank_discarder:
-            opp_discard = min(opp3, key=lambda c: (c >> 2, c & 3))
-            opp_best = tuple(c for c in opp3 if c != opp_discard)
-        else:
-            opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], board_ints))
+        opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], board_ints))
         s_opp = eval_fast(list(opp_best) + full_b)
 
         for i in range(3):
@@ -879,7 +874,6 @@ class PokerBot:
             board,
             self.dead_cards,
             opp_raises_preflop=self.opp_raises_preflop,
-            opp_is_rank_discarder=self.opp_model.is_rank_discarder,
             n_samples=n_samples,
         )
         self.cached_discard = best_card
@@ -1053,7 +1047,6 @@ class PokerBot:
                 best_card, ehs = select_best_discard_ehs(
                     self.hole_cards, board, self.dead_cards,
                     opp_raises_preflop=opp_raises_preflop,
-                    opp_is_rank_discarder=self.opp_model.is_rank_discarder,
                     n_samples=n_samples
                 )
                 self.cached_discard = best_card

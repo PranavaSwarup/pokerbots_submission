@@ -6,28 +6,25 @@ Game-Theoretic & Bayesian Architecture:
 1. Direct Integer Bitmask Evaluator (eval_fast):
    - Direct 5, 6, 7-card integer bitmask evaluator (matching engine.py 100%).
    - Operates in ~2.5 microseconds per evaluation.
-2. Realistic 3-to-2 Preflop Simulation:
-   - Evaluates 3-card preflop equity by simulating the true Discard Hold'em mechanic:
-     both players deal 3 cards, see the flop, keep best 2, and showdown on the river.
-   - Distinguishes false monsters (e.g. 888 must discard an 8, so it's only a pair of 8s).
+2. True 3-to-2 Preflop & Flop Simulation:
+   - Full Discard Hold'em simulation where both players hold 3 cards, see the flop,
+     keep their best 2, and showdown on the 5-card board.
 3. Effective Hand Strength (EHS) with Transition Potentials:
    - Evaluates Current Hand Strength (HS), Positive Potential (PPOT), and Negative Potential (NPOT).
    - EHS = HS * (1 - NPOT) + (1 - HS) * PPOT (Billings et al., University of Alberta).
 4. Discard-Conditioned Bayesian River & Turn Evaluation:
    - Conditions opponent hand distributions on their public exposed discard (opp_discard).
-   - Opponent is modeled as having kept the cards that connected best with the flop.
-   - River: Exact exhaustive enumeration over all ~900 combinations with discard weighting.
-5. Game-Theoretic Defense & Geometric Pot Sizing:
-   - Minimum Defense Frequency (MDF = 1 - Pot Odds) to prevent exploitation.
-   - Geometric Pot Sizing (33% dry flop, 60% wet flop, 65% turn, 75%-100% river).
-   - Strict stack preservation on multi-raise streets.
-6. Dynamic Opponent Exploitation:
-   - Real-time classification: Calling Station, Maniac, Nit.
-   - Zero bluffs and larger value against Stations; check-call traps against Maniacs;
-     aggressive blind/flop steals against Nits.
+   - Downweights opponent candidate holdings that would have prioritized opp_discard over kept cards.
+   - Exact exhaustive river enumeration (~900 combos with Bayesian weights in 15ms).
+5. Professional Heads-Up Bet Sizing & Check-Raise Trapping:
+   - Preflop: 2.5x BB opens (5 chips), 3x 3-bets (12-15 chips), 2.5x 4-bets (30 chips).
+   - Postflop: Geometric pot sizing (33% dry flop, 60% wet flop, 65% turn, 75%-100% river).
+   - Check-raise trapping: Out-of-position check-raises with monster hands against aggressive c-bettors.
+6. Disciplined River Defense & Stack Preservation:
+   - Zero calling station river hero-calls (passive players never bluff river).
+   - Bluff catching against maniacs and high-MDF defense against standard opponents.
 7. Dynamic Time-Bank Safety Controller:
    - Continuously adapts simulation budgets to remaining time and hands.
-   - Guaranteed zero timeouts/forfeits on 1 vCPU evaluation environments.
    - 100% Python Standard Library. Zero external dependencies.
 """
 
@@ -93,6 +90,7 @@ def eval_fast(c_ints):
                 if uniq_f[i] - uniq_f[i + 4] == 4:
                     sf_high = uniq_f[i] + 2
                     break
+            # A-2-3-4-5 straight flush (Ace is 12, 2 is 0)
             if sf_high == 0 and 12 in uniq_f and 0 in uniq_f and 1 in uniq_f and 2 in uniq_f and 3 in uniq_f:
                 sf_high = 5
         if sf_high > 0:
@@ -190,6 +188,39 @@ def simulate_preflop_equity(hole_strs, n_sims=80):
             wins += 0.5
 
     return wins / n_sims
+
+
+# ============================================================================
+# TRUE 3v3 FLOP EQUITY SIMULATION (Pre-Discard Flop Round)
+# ============================================================================
+
+def simulate_flop_3v3_equity(hole_ints, flop_ints, dead_ints, n_sims=150):
+    """
+    Simulates realistic 3v3 equity on the flop before discard:
+    Both players hold 3 cards, evaluate their best 2 on the flop,
+    and run out the remaining turn and river.
+    """
+    known = set(hole_ints) | set(flop_ints) | dead_ints
+    avail = [c for c in FULL_DECK_INTS if c not in known]
+    wins = 0.0
+
+    for _ in range(n_sims):
+        sampled = random.sample(avail, 5)
+        opp3 = sampled[:3]
+        runout = sampled[3:]
+        full_b = flop_ints + runout
+
+        my_best = max(combinations(hole_ints, 2), key=lambda p: eval_fast(list(p) + flop_ints))
+        opp_best = max(combinations(opp3, 2), key=lambda p: eval_fast(list(p) + flop_ints))
+
+        s1 = eval_fast(list(my_best) + full_b)
+        s2 = eval_fast(list(opp_best) + full_b)
+        if s1 > s2:
+            wins += 1.0
+        elif s1 == s2:
+            wins += 0.5
+
+    return wins / max(n_sims, 1)
 
 
 # ============================================================================
@@ -414,11 +445,6 @@ class PokerBot:
     # ---- Dynamic Simulation Budget Controller ----
 
     def get_sim_budget(self, base=200):
-        """
-        Dynamically adjusts Monte Carlo budget based on remaining time bank.
-        Guarantees zero timeouts or forfeits.
-        """
-        # Per-decision budget
         avg_ms_left = max(10.0, (self.time_left_ms - 2500.0) / max(self.hands_remaining * 3, 1))
         if self.time_left_ms < 4000:
             return 40   # Emergency fast mode
@@ -576,16 +602,12 @@ class PokerBot:
         flop_ints = [CARD_TO_INT[c] for c in self.flop_cards] if self.flop_cards else board_ints[:3]
 
         n_samples = self.get_sim_budget(base=220)
+
+        # Realistic Flop vs Post-Discard Evaluation
         if street == "flop" and len(hole_ints) == 3:
-            best_ehs = 0.0
-            best_ppot = 0.0
-            for pair in combinations(hole_ints, 2):
-                hs, ppot, npot, ehs = compute_ehs(list(pair), board_ints, dead_ints, n_samples=n_samples // 3)
-                if ehs > best_ehs:
-                    best_ehs = ehs
-                    best_ppot = ppot
-            ehs = best_ehs
-            ppot = best_ppot
+            # Flop pre-discard: Both players hold 3 cards and will keep best 2!
+            ehs = simulate_flop_3v3_equity(hole_ints, board_ints, dead_ints, n_sims=n_samples)
+            ppot = 0.30
         else:
             _, ppot, _, ehs = compute_ehs(
                 hole_ints, board_ints, dead_ints,
@@ -613,11 +635,14 @@ class PokerBot:
         hand_cat = made_rank[0]
 
         # ====================================================================
-        # DECISION MATRIX
+        # DECISION MATRIX (Using EHS, MDF, and Pot Odds)
         # ====================================================================
 
         # 1. MONSTER / NUTS (EHS >= 0.85)
         if ehs >= 0.85:
+            # Check-raise trap: If OOP on flop/turn against aggressive bettor, check first
+            if to_call == 0 and self.seat == "big_blind" and self.opp_model.af > 1.2 and street in ("flop", "turn") and random.random() < 0.65:
+                return {"type": "action", "action": "check"}
             if "raise" in legal and raises_left > 0:
                 sizing = 0.85 if (street == "river" or spr < 2.0) else 0.65
                 return self.build_raise(req, sizing)
@@ -639,6 +664,10 @@ class PokerBot:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
+                # River defense against passive players: They never bluff river!
+                if street == "river" and self.opp_model.is_station and hand_cat < 2:
+                    return self.fold_or_check(legal)
+                # Stack preservation against multiple raises
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
                 if ehs >= pot_odds + 0.04:
@@ -652,6 +681,11 @@ class PokerBot:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
+                if street == "river" and to_call > 0:
+                    # On river, draws have missed! Only call if made hand justifies
+                    if hand_cat >= 1 and ehs >= pot_odds + 0.05:
+                        return self.call_or_check(legal)
+                    return self.fold_or_check(legal)
                 if ehs >= pot_odds:
                     return self.call_or_check(legal)
                 if street != "river" and spr > 2.5 and (ehs + ppot * 0.20) >= pot_odds:
@@ -696,7 +730,7 @@ class PokerBot:
             freq *= 0.5
         return random.random() < freq
 
-    # ---- Sizing Helper ----
+    # ---- Professional Heads-Up Bet & Raise Sizing ----
 
     def build_raise(self, req, sizing):
         if "raise" not in req["legal_actions"]:
@@ -707,22 +741,37 @@ class PokerBot:
         pot = req["pot"]
         to_call = req["to_call"]
         opp_bet = req["opp_bet"]
+        street = req["street"]
 
         if mn >= mx:
             return {"type": "action", "action": "raise", "amount": mn}
 
-        pot_after_call = pot + to_call
-
-        if sizing >= 0.90:
-            target = mx
-        elif sizing >= 0.70:
-            target = opp_bet + int(pot_after_call * 0.90)
-        elif sizing >= 0.50:
-            target = opp_bet + int(pot_after_call * 0.60)
-        elif sizing >= 0.30:
-            target = opp_bet + int(pot_after_call * 0.40)
+        if street == "preflop":
+            # Poker-standard preflop sizing
+            if to_call <= 1:
+                # Button open: 2.5x BB (5 chips)
+                target = 5 if sizing >= 0.50 else 4
+            else:
+                # 3-bet or 4-bet facing open/raise
+                if sizing >= 0.70:
+                    target = int(opp_bet * 2.5) if opp_bet >= 10 else opp_bet * 3
+                elif sizing >= 0.45:
+                    target = opp_bet * 3
+                else:
+                    target = mn
         else:
-            target = mn
+            # Postflop geometric pot sizing
+            pot_after_call = pot + to_call
+            if sizing >= 0.90:
+                target = mx
+            elif sizing >= 0.70:
+                target = opp_bet + int(pot_after_call * 0.85)
+            elif sizing >= 0.50:
+                target = opp_bet + int(pot_after_call * 0.60)
+            elif sizing >= 0.30:
+                target = opp_bet + int(pot_after_call * 0.35)
+            else:
+                target = mn
 
         amount = max(mn, min(mx, target))
         if amount >= mx * 0.75:

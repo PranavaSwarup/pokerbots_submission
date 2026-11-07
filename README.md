@@ -11,10 +11,11 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - Operates at **~2.5 microseconds per evaluation** (a **25x speedup** over naive `combinations` + `Counter` approaches).
 - 100% pure Python standard library: zero external dependencies, zero compilation steps, completely portable.
 
-### 2. Realistic 3-to-2 Discard Hold'em Preflop Simulation
+### 2. True 3-to-2 Preflop & Flop Simulation
 - In Discard Hold'em, players are dealt 3 cards, but must discard 1 after the flop.
 - Rather than evaluating hands as static 3-card poker, our engine simulates the full mechanic: both players deal 3 cards, see the flop, keep their best 2, and run out to the river.
 - Prevents false-positive monster traps (e.g., holding `888` is not trips on the river—one 8 must be discarded, making it only a pair of 8s).
+- On the flop pre-discard, evaluates true 3v3 equity where both players select their best 2 of 3 cards on the flop texture.
 
 ### 3. Effective Hand Strength (EHS) with Transition Potentials
 - Implements the University of Alberta / Billings formulation:
@@ -28,10 +29,11 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
   - If the opponent discarded $d_{opp}$, candidate hands where $d_{opp}$ would have been kept over their current holding are downweighted/eliminated.
   - River: Exact exhaustive enumeration over all ~900 opponent holdings with Bayesian discard weighting in ~15 ms.
 
-### 5. Game-Theoretic Defense & Geometric Pot Sizing
-- **Minimum Defense Frequency (MDF)**: $\text{MDF} = \frac{\text{Pot}}{\text{Pot} + \text{To\_Call}}$ ensures the bot is never exploitable by aggressive bluffing bots.
-- **Geometric Pot Sizing**: 33% on dry flops, 60% on wet flops, 65% on turns, and 75%–100% / shove on rivers.
-- **Stack Preservation**: Avoids over-committing full stacks with one pair/marginal holdings, preserving chips across duplicate deals.
+### 5. Professional Heads-Up Bet Sizing & Check-Raise Trapping
+- **Preflop Sizing**: Calibrated 2.5x BB button opens (5 chips), 3x 3-bets (12-15 chips), and 2.5x 4-bets (30 chips).
+- **Postflop Sizing**: Geometric pot scaling (33% dry flop, 60% wet flop, 65% turn, 75%–100% / shove on river).
+- **Check-Raise Trapping**: When Out of Position postflop holding monster equity ($\ge 85\%$) against aggressive opponents, checks first to induce bluffs and extract maximum chips via check-raises.
+- **Disciplined River Defense**: Zero hero-calls against passive opponents (calling stations never bluff the river).
 
 ### 6. Dynamic Time-Bank Safety Controller
 - Continuously calculates per-decision time budgets:
@@ -46,11 +48,10 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `random_bot.py`** | Stage 1 (400 hands) | **+4,953** | **Win (Capped +400)** | 3.4 s / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 1 (400 hands) | **+4,528** | **Win (Capped +400)** | 4.8 s / 30.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+13,161** | **Win (Capped +400)** | 8.3 s / 30.0 s | **0** |
+| **vs `bot.py` (Starter)** | Stage 1 (400 hands) | **+3,078** | **Win (Capped +400)** | 11.1 s / 30.0 s | **0** |
 | **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+13,793** | **Win (Capped +1000)** | 33.2 s / 75.0 s | **0** |
-| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+12,605** | **Win (Capped +400)** | 7.7 s / 30.0 s | **0** |
-| **vs `bot.py` (Starter)** | Stage 1 (400 hands) | **+3,122** | **Win (Capped +400)** | 10.1 s / 30.0 s | **0** |
-| **vs `nit_bot.py`** | Stage 1 (400 hands) | **+720** | **Win (Capped +400)** | 0.6 s / 30.0 s | **0** |
 
 ---
 

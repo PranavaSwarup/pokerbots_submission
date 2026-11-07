@@ -655,6 +655,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
         [hole_ints[0], hole_ints[2]],  # discard card 1
         [hole_ints[0], hole_ints[1]],  # discard card 2
     ]
+    s_my_currs = [eval_fast(c + board_ints) for c in candidates]
     hp = [[[0, 0, 0], [0, 0, 0], [0, 0, 0]] for _ in range(3)]
     valid_samples = 0
     attempts = 0
@@ -684,7 +685,7 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
         s_opp_fin = eval_fast(list(opp_best) + full_b)
 
         for i in range(3):
-            s_my_curr = eval_fast(candidates[i] + board_ints)
+            s_my_curr = s_my_currs[i]
             s_my_fin = eval_fast(candidates[i] + full_b)
             c_idx = 0 if s_my_curr > s_opp_curr else (1 if s_my_curr == s_opp_curr else 2)
             f_idx = 0 if s_my_fin > s_opp_fin else (1 if s_my_fin == s_opp_fin else 2)
@@ -757,10 +758,15 @@ class OpponentModel:
                 if opp_cat == 0:
                     self.showdown_river_bluffs += 1.0
                 elif opp_cat == 1:
-                    max_b_rank = max(CARD_TO_INT[c] >> 2 for c in board)
+                    opp_ranks = {CARD_TO_INT[c] >> 2 for c in opp_hole_cards}
                     pair_r = opp_eval[1] - 2
-                    if pair_r < max_b_rank:
-                        self.showdown_river_bluffs += 0.5
+                    if pair_r not in opp_ranks:
+                        # Board was paired; opponent held no pair in hand (pure bluff)
+                        self.showdown_river_bluffs += 1.0
+                    else:
+                        max_b_rank = max(CARD_TO_INT[c] >> 2 for c in board)
+                        if pair_r < max_b_rank:
+                            self.showdown_river_bluffs += 0.5
 
         preflop_counted = False
         last_actor_was_me_raise = False
@@ -814,6 +820,8 @@ class OpponentModel:
 
     @property
     def is_rank_discarder(self):
+        if self.opp_discard_showdown_count >= 3:
+            return (self.opp_rank_discard_count / self.opp_discard_showdown_count) >= 0.80
         return self.opp_discard_showdown_count >= 2 and self.opp_rank_discard_count == self.opp_discard_showdown_count
 
     @property
@@ -906,6 +914,7 @@ class PokerBot:
         self.flop_cards = []
         self.cached_discard = None
         self.cached_flop_ehs = None
+        self.cached_flop_ppot = None
         self.opp_raises_preflop = 0
 
     def handle_discard_result(self, msg):
@@ -936,7 +945,7 @@ class PokerBot:
             return {"type": "discard", "card": self.cached_discard}
 
         n_samples = self.get_sim_budget(base=200)
-        best_card, best_ehs, _ = select_best_discard_ehs(
+        best_card, best_ehs, best_ppot = select_best_discard_ehs(
             hole, board, self.dead_cards,
             opp_raises_preflop=self.opp_raises_preflop,
             opp_is_rank_discarder=self.opp_model.is_rank_discarder,
@@ -944,6 +953,7 @@ class PokerBot:
         )
         self.cached_discard = best_card
         self.cached_flop_ehs = best_ehs
+        self.cached_flop_ppot = best_ppot
         return {"type": "discard", "card": best_card}
 
     # ---- Action Request ----
@@ -1008,7 +1018,8 @@ class PokerBot:
                 if eq < 0.62 and not self.opp_model.is_maniac:
                     return self.fold_or_check(legal)
                 return self.call_or_check(legal)
-            if to_call > 4 and opp_raises == 1 and eq < 0.66 and not self.opp_model.is_maniac:
+            # Flat single preflop opens with medium-strong holdings to control pot size
+            if opp_raises == 1 and eq < 0.66 and not self.opp_model.is_maniac:
                 return self.call_or_check(legal)
             if "raise" in legal and raises_left > 0:
                 return self.build_raise(req, 0.50)
@@ -1121,7 +1132,7 @@ class PokerBot:
             if self.cached_flop_ehs is not None and self.cached_discard is not None:
                 ehs = self.cached_flop_ehs
                 best_card = self.cached_discard
-                ppot = 0.0
+                ppot = self.cached_flop_ppot if self.cached_flop_ppot is not None else 0.0
             else:
                 best_card, ehs, ppot = select_best_discard_ehs(
                     self.hole_cards, board, self.dead_cards,
@@ -1131,6 +1142,7 @@ class PokerBot:
                 )
                 self.cached_discard = best_card
                 self.cached_flop_ehs = ehs
+                self.cached_flop_ppot = ppot
             kept_ints = [c for c in hole_ints if c != CARD_TO_INT[best_card]]
             made_rank = eval_fast(kept_ints + board_ints)
             draw_cat, ppot_val = draw_potential(kept_ints + board_ints, is_turn=False)
@@ -1252,8 +1264,8 @@ class PokerBot:
                     v_floor = board_value_floor(board_ints)
                     if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
                         return self.fold_or_check(legal)
-                # Calibrated bluff-catching threshold
-                call_margin = 0.00 if self.opp_model.is_maniac else (0.07 if self.opp_model.is_station else 0.03)
+                # Continuous Bayesian bluff-catching call margin:
+                call_margin = max(-0.04, min(0.08, 0.20 - self.opp_model.river_bluff_freq))
                 if ehs >= pot_odds + call_margin:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
@@ -1345,7 +1357,7 @@ class PokerBot:
                 return False
             freq = 0.15 if self.opp_model.fold_to_raise_pct > 0.40 else 0.05
         else:
-            freq = 0.20
+            freq = 0.26 if self.seat == "button" else 0.15
         if self.opp_model.is_nit:
             freq *= 1.8
         elif self.opp_model.fold_to_raise_pct > 0.50:

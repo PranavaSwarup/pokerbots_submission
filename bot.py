@@ -1014,12 +1014,28 @@ class PokerBot:
 
         # 2. VERY STRONG (EHS >= 0.70)
         if ehs >= 0.70:
-            if opp_raises_this_street >= 2:
-                return self.call_or_check(legal)
-            if "raise" in legal and raises_left > 0:
-                sizing = 0.60 if spr > 2.5 else 0.75
-                return self.build_raise(req, sizing)
-            return self.call_or_check(legal)
+            if to_call == 0:
+                if street == "river":
+                    v_floor = board_value_floor(board_ints)
+                    if hand_cat < v_floor:
+                        return {"type": "action", "action": "check"}
+                    if "raise" in legal and raises_left > 0:
+                        sizing = 0.65 if (self.opp_model.is_maniac or self.opp_model.is_station) else 0.45
+                        return self.build_raise(req, sizing)
+                    return {"type": "action", "action": "check"}
+                if "raise" in legal and raises_left > 0:
+                    sizing = 0.60 if spr > 2.5 else 0.70
+                    return self.build_raise(req, sizing)
+                return {"type": "action", "action": "check"}
+            else:
+                if opp_raises_this_street >= 2 and hand_cat <= 1:
+                    return self.fold_or_check(legal)
+                if street == "river" and to_call > 50 and not self.opp_model.is_maniac and hand_cat < 2:
+                    return self.fold_or_check(legal)
+                call_margin = 0.00 if self.opp_model.is_maniac else 0.02
+                if ehs >= pot_odds + call_margin:
+                    return self.call_or_check(legal)
+                return self.fold_or_check(legal)
 
         # 3. SOLID MADE HAND (EHS >= 0.55)
         if ehs >= 0.55:

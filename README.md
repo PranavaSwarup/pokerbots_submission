@@ -23,19 +23,24 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - Evaluates **Current Hand Strength ($HS$)**, **Positive Potential ($PPOT$)**, and **Negative Potential ($NPOT$)**.
 - Correctly values monster draws on wet boards (e.g., straight-flush draws are evaluated at ~68% equity instead of folding high-card 9).
 
-### 4. Discard-Conditioned Bayesian Range Evaluation
+### 4. Action-Aware & Discard-Conditioned Bayesian Range Evaluation
 - The defining mechanic in Discard Hold'em is the **simultaneous exposed discard** after the flop (`opp_discard`).
-- Our bot conditions the opponent's candidate hand distribution on their public discard:
-  - If the opponent discarded $d_{opp}$, candidate hands where $d_{opp}$ would have been kept over their current holding are downweighted/eliminated.
-  - River: Exact exhaustive enumeration over all ~900 opponent holdings with Bayesian discard weighting in ~15 ms.
+- Our bot conditions the opponent's candidate hand distribution on both public information sources:
+  - **Discard Conditioning**: If the opponent discarded $d_{opp}$, candidate hands where $d_{opp}$ would have been kept over their current holding on the flop texture are downweighted/eliminated.
+  - **Action Conditioning**: Separates opponent's **Betting Range** (monsters, top pairs, high draws, bluffs) from their **Checking Range** (capped, marginal hands) based on real-time opponent aggression profiling ($AF$, $VPIP$).
+  - **River**: Exact exhaustive enumeration over all ~900 opponent holdings with Bayesian discard and action weights in ~15 ms.
 
-### 5. Professional Heads-Up Bet Sizing & Check-Raise Trapping
+### 5. Variance-Free Discard Optimization via Common Random Numbers (CRN)
+- Solves discard selection by evaluating all 3 candidate 2-card holdings against the **exact same simulated opponent hands and board runouts** ($Cov(X_A, X_B) > 0$).
+- Eliminates Monte Carlo sample variance between candidate choices, cuts evaluation runtime in half, and increases simulation fidelity ($N = 220$).
+
+### 6. Professional Heads-Up Bet Sizing & Check-Raise Trapping
 - **Preflop Sizing**: Calibrated 2.5x BB button opens (5 chips), 3x 3-bets (12-15 chips), and 2.5x 4-bets (30 chips).
 - **Postflop Sizing**: Geometric pot scaling (33% dry flop, 60% wet flop, 65% turn, 75%–100% / shove on river).
 - **Check-Raise Trapping**: When Out of Position postflop holding monster equity ($\ge 85\%$) against aggressive opponents, checks first to induce bluffs and extract maximum chips via check-raises.
-- **Disciplined River Defense**: Zero hero-calls against passive opponents (calling stations never bluff the river).
+- **Disciplined River & Preflop Stack Preservation**: Zero hero-calls against passive opponents (calling stations never bluff the river). Folds marginal holdings to 4-bets and all-in shoves to protect the stack in duplicate deals. Medium hands check behind on the river to realize showdown value.
 
-### 6. Dynamic Time-Bank Safety Controller
+### 7. Dynamic Time-Bank Safety Controller
 - Continuously calculates per-decision time budgets:
   $$\text{Budget} = \frac{\text{Time Left} - 2.5\text{s}}{\text{Hands Remaining} \times 3}$$
 - Automatically scales Monte Carlo sample counts, guaranteeing zero timeouts or forfeits even on a throttled 1 vCPU evaluation environment.
@@ -48,10 +53,10 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `random_bot.py`** | Stage 1 (400 hands) | **+4,528** | **Win (Capped +400)** | 4.8 s / 30.0 s | **0** |
-| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+13,161** | **Win (Capped +400)** | 8.3 s / 30.0 s | **0** |
-| **vs `bot.py` (Starter)** | Stage 1 (400 hands) | **+3,078** | **Win (Capped +400)** | 11.1 s / 30.0 s | **0** |
-| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+13,793** | **Win (Capped +1000)** | 33.2 s / 75.0 s | **0** |
+| **vs `random_bot.py`** | Stage 1 (400 hands) | **+8,030** | **Win (Capped +400)** | 6.02 s / 30.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 1 (400 hands) | **+8,902** | **Win (Capped +400)** | 10.53 s / 30.0 s | **0** |
+| **vs `random_bot.py`** | Stage 2 (1,000 hands) | **+13,146** | **Win (Capped +1000)** | 43.61 s / 75.0 s | **0** |
+| **vs `bot.py` (Self-Play)** | Stage 1 (400 hands) | **±44** | **Near-Equilibrium** | 16.5 s / 30.0 s | **0** |
 
 ---
 

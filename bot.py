@@ -2,7 +2,7 @@
 Championship Discard Hold'em Bot for Pokerbots (Synergy '26 @ IIIT Bangalore).
 Team: Pranava Swarup (pranava)
 
-Game-Theoretic & Bayesian Architecture:
+Game-Theoretic & Action-Aware Bayesian Architecture:
 1. Direct Integer Bitmask Evaluator (eval_fast):
    - Direct 5, 6, 7-card integer bitmask evaluator (matching engine.py 100%).
    - Operates in ~2.5 microseconds per evaluation.
@@ -11,19 +11,19 @@ Game-Theoretic & Bayesian Architecture:
      keep their best 2, and showdown on the 5-card board.
 3. Realistic Opponent 3-Card Discard Evaluation:
    - During the flop discard phase, simulates opponent as also holding 3 cards and
-     discarding their worst card, accurately reflecting the real game state.
-   - Evaluates transition potentials (HS, PPOT, NPOT) to select the globally optimal discard.
-4. Discard-Conditioned Bayesian River & Turn Evaluation:
-   - Conditions opponent hand distributions on their public exposed discard (opp_discard).
-   - Downweights opponent candidate holdings that would have prioritized opp_discard over kept cards.
-   - Exact exhaustive river enumeration (~900 combos with Bayesian weights in 15ms).
+     discarding their worst card, accurately reflecting the true game state.
+4. Action-Aware Bayesian River & Turn Range Conditioning:
+   - Discard Conditioning: Downweights candidate holdings inconsistent with opp_discard.
+   - Action Conditioning: Separates opponent's BETTING range (monsters + bluffs) from
+     CHECKING range (capped/marginal hands) based on live opponent profile.
+   - Prevents fatal hero-calls against passive opponents while catching bluffs against maniacs.
 5. Professional Heads-Up Bet Sizing & Check-Raise Trapping:
    - Preflop: 2.5x BB button opens (5 chips), 3x 3-bets (12-15 chips), 2.5x 4-bets (30 chips).
    - Postflop: Geometric pot scaling (33% dry flop, 60% wet flop, 65% turn, 75%-100% river).
    - Check-raise trapping: Out-of-position check-raises with monster hands against aggressive c-bettors.
 6. Disciplined River Defense & Stack Preservation:
    - Zero calling station river hero-calls (passive players never bluff river).
-   - Bluff catching against maniacs and high-MDF defense against standard opponents.
+   - Minimum Defense Frequency (MDF = 1 - Pot Odds) applied dynamically.
 7. Dynamic Time-Bank Safety Controller:
    - Continuously adapts simulation budgets to remaining time and hands.
    - 100% Python Standard Library. Zero external dependencies.
@@ -225,14 +225,37 @@ def simulate_flop_3v3_equity(hole_ints, flop_ints, dead_ints, n_sims=150):
 
 
 # ============================================================================
-# EFFECTIVE HAND STRENGTH (EHS) WITH DISCARD CONDITIONING
+# ACTION-AWARE EFFECTIVE HAND STRENGTH (EHS)
 # ============================================================================
 
-def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_ints=None, n_samples=200):
+def has_draw(c_ints):
+    """Checks for 4-to-a-flush or open-ended / gutshot straight draws."""
+    suits = [0] * 4
+    ranks = [0] * 13
+    for c in c_ints:
+        suits[c & 3] += 1
+        ranks[c >> 2] += 1
+    if suits[0] >= 4 or suits[1] >= 4 or suits[2] >= 4 or suits[3] >= 4:
+        return True
+    mask = 0
+    for r in range(13):
+        if ranks[r] > 0:
+            mask |= (1 << r)
+    for r in range(12, 3, -1):
+        pat = 0x1F << (r - 4)
+        if bin(mask & pat).count('1') >= 4:
+            return True
+    if bin(mask & 0x100F).count('1') >= 4:
+        return True
+    return False
+
+
+def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_ints=None,
+                facing_bet=False, opp_is_station=False, opp_is_maniac=False, n_samples=200):
     """
     Computes Hand Strength (HS), Positive Potential (PPOT), Negative Potential (NPOT),
     and Effective Hand Strength (EHS) = HS * (1 - NPOT) + (1 - HS) * PPOT.
-    Conditions opponent range on their public exposed discard when available.
+    Conditions opponent range on both their exposed discard AND their betting action.
     """
     known = set(hole_ints) | set(board_ints) | dead_ints
     if opp_discard_int is not None:
@@ -240,31 +263,54 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
     avail = [c for c in FULL_DECK_INTS if c not in known]
     board_needed = 5 - len(board_ints)
 
-    # --- RIVER: 5 Board Cards -> Exact Discard-Conditioned Enumeration ---
+    # --- RIVER: 5 Board Cards -> Exact Action-Conditioned Enumeration ---
     if board_needed == 0:
         my_score = eval_fast(hole_ints + board_ints)
         wins_c = 0.0
         total_weight = 0.0
 
+        bluff_freq = 0.40 if opp_is_maniac else (0.02 if opp_is_station else 0.15)
+        max_board_rank = max(c >> 2 for c in board_ints)
+
         for o1, o2 in combinations(avail, 2):
-            weight = 1.0
+            w_disc = 1.0
             if opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
                 s_kept = eval_fast([o1, o2] + flop_ints)
                 s_alt1 = eval_fast([o1, opp_discard_int] + flop_ints)
                 s_alt2 = eval_fast([o2, opp_discard_int] + flop_ints)
                 if s_kept >= s_alt1 and s_kept >= s_alt2:
-                    weight = 1.0
+                    w_disc = 1.0
                 elif s_kept >= min(s_alt1, s_alt2):
-                    weight = 0.30
+                    w_disc = 0.30
                 else:
-                    weight = 0.05
+                    w_disc = 0.05
 
             s_opp = eval_fast([o1, o2] + board_ints)
+            cat = s_opp[0]
+
+            # Action conditioning
+            if facing_bet:
+                if cat >= 2:
+                    w_act = 1.0
+                elif cat == 1:
+                    pair_r = s_opp[1] - 2
+                    w_act = 0.85 if pair_r >= max_board_rank else 0.20
+                else:
+                    w_act = bluff_freq
+            else:
+                if cat >= 2:
+                    w_act = 0.25
+                elif cat == 1:
+                    w_act = 0.90
+                else:
+                    w_act = 1.00
+
+            w_total = w_disc * w_act
             if my_score > s_opp:
-                wins_c += 1.0 * weight
+                wins_c += 1.0 * w_total
             elif my_score == s_opp:
-                wins_c += 0.5 * weight
-            total_weight += weight
+                wins_c += 0.5 * w_total
+            total_weight += w_total
 
         equity = wins_c / max(total_weight, 1.0)
         return equity, 0.0, 0.0, equity
@@ -286,6 +332,12 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
                 continue
 
         opp_curr = eval_fast(opp + board_ints)
+
+        # Action conditioning on turn: passive / standard players rarely bet pure unmade air
+        if facing_bet and board_needed == 1 and opp_curr[0] == 0 and not opp_is_maniac:
+            if not has_draw(opp + board_ints) and random.random() > (0.02 if opp_is_station else 0.15):
+                continue
+
         c_idx = 0 if my_curr > opp_curr else (1 if my_curr == opp_curr else 2)
 
         full_b = board_ints + runout
@@ -312,48 +364,46 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
 
 
 # ============================================================================
-# OPTIMAL DISCARD SELECTION (Flop)
+# OPTIMAL DISCARD SELECTION (Flop with Common Random Numbers)
 # ============================================================================
 
-def select_best_discard_ehs(hole_strs, board_strs, dead_strs, n_samples=180):
+def select_best_discard_ehs(hole_strs, board_strs, dead_strs, n_samples=220):
     """
-    Selects the card to discard by maximizing showdown equity against
-    an opponent who also holds 3 cards and discards their worst.
+    Selects the card to discard using Common Random Numbers (CRN):
+    Evaluates all 3 candidate discards against the EXACT SAME opponent cards
+    and board runouts, eliminating sample variance and accelerating evaluation.
     """
     hole_ints = [CARD_TO_INT[c] for c in hole_strs]
     board_ints = [CARD_TO_INT[c] for c in board_strs]
     dead_ints = {CARD_TO_INT[c] for c in dead_strs} | set(hole_ints) | set(board_ints)
     avail = [c for c in FULL_DECK_INTS if c not in dead_ints]
 
-    best_card = hole_strs[0]
-    best_equity = -1.0
+    candidates = [
+        [hole_ints[1], hole_ints[2]],  # discard card 0
+        [hole_ints[0], hole_ints[2]],  # discard card 1
+        [hole_ints[0], hole_ints[1]],  # discard card 2
+    ]
+    wins = [0.0, 0.0, 0.0]
 
-    for discard_idx in range(len(hole_strs)):
-        kept = [hole_ints[j] for j in range(len(hole_strs)) if j != discard_idx]
-        wins = 0.0
+    for _ in range(n_samples):
+        sampled = random.sample(avail, 5)
+        opp3 = sampled[:3]
+        runout = sampled[3:]
+        full_b = board_ints + runout
 
-        for _ in range(n_samples):
-            sampled = random.sample(avail, 5)  # 3 opp cards + 2 runout cards
-            opp3 = sampled[:3]
-            runout = sampled[3:]
-            full_b = board_ints + runout
+        opp_best = max(combinations(opp3, 2), key=lambda p: eval_fast(list(p) + board_ints))
+        s_opp = eval_fast(list(opp_best) + full_b)
 
-            # Opponent keeps their best 2 on flop
-            opp_best = max(combinations(opp3, 2), key=lambda p: eval_fast(list(p) + board_ints))
+        for i in range(3):
+            s_my = eval_fast(candidates[i] + full_b)
+            if s_my > s_opp:
+                wins[i] += 1.0
+            elif s_my == s_opp:
+                wins[i] += 0.5
 
-            s1 = eval_fast(kept + full_b)
-            s2 = eval_fast(list(opp_best) + full_b)
-            if s1 > s2:
-                wins += 1.0
-            elif s1 == s2:
-                wins += 0.5
-
-        eq = wins / max(n_samples, 1)
-        if eq > best_equity:
-            best_equity = eq
-            best_card = hole_strs[discard_idx]
-
-    return best_card, best_equity
+    best_idx = max(range(3), key=lambda i: wins[i] + 0.0001 * RV.get(hole_strs[i][0], 0))
+    best_equity = wins[best_idx] / max(n_samples, 1)
+    return hole_strs[best_idx], best_equity
 
 
 # ============================================================================
@@ -557,6 +607,9 @@ class PokerBot:
 
         # --- Strong Hands (eq >= 0.55) ---
         if eq >= 0.55:
+            # Huge 4-bet or all-in shove: stack preservation
+            if to_call > 30 and not self.opp_model.is_maniac and eq < 0.65:
+                return self.fold_or_check(legal)
             if opp_raises >= 2:
                 return self.call_or_check(legal)
             if "raise" in legal and raises_left > 0:
@@ -565,7 +618,7 @@ class PokerBot:
 
         # --- Playable Hands (eq >= 0.45) ---
         if eq >= 0.45:
-            if opp_raises >= 2:
+            if opp_raises >= 2 or to_call > 15:
                 return self.fold_or_check(legal)
             if opp_raises == 1:
                 if to_call <= 6 or eq >= pot_odds + 0.05:
@@ -583,7 +636,8 @@ class PokerBot:
         # --- Marginal Hands (eq >= 0.35) ---
         if eq >= 0.35:
             if opp_raises >= 1:
-                if to_call <= 3 or eq >= pot_odds:
+                # Defend only against standard min-raises, fold to 3-bets
+                if to_call <= 3:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
             if is_button:
@@ -623,17 +677,19 @@ class PokerBot:
 
         n_samples = self.get_sim_budget(base=220)
 
-        # Realistic Flop vs Post-Discard Evaluation
+        # Action-Aware & Realistic Flop vs Post-Discard Evaluation
         if street == "flop" and len(hole_ints) == 3:
             ehs = simulate_flop_3v3_equity(hole_ints, board_ints, dead_ints, n_sims=n_samples)
             ppot = 0.30
         else:
             _, ppot, _, ehs = compute_ehs(
                 hole_ints, board_ints, dead_ints,
-                opp_discard_int=opp_disc_int, flop_ints=flop_ints, n_samples=n_samples
+                opp_discard_int=opp_disc_int, flop_ints=flop_ints,
+                facing_bet=(to_call > 0),
+                opp_is_station=self.opp_model.is_station,
+                opp_is_maniac=self.opp_model.is_maniac,
+                n_samples=n_samples
             )
-
-        ehs = self.adjust_postflop_ehs(ehs, history)
 
         if to_call > 0:
             pot_odds = to_call / (pot + to_call)
@@ -654,7 +710,7 @@ class PokerBot:
         hand_cat = made_rank[0]
 
         # ====================================================================
-        # DECISION MATRIX (Using EHS, MDF, and Pot Odds)
+        # DECISION MATRIX (Using Action-Conditioned EHS, MDF, and Pot Odds)
         # ====================================================================
 
         # 1. MONSTER / NUTS (EHS >= 0.85)
@@ -679,6 +735,11 @@ class PokerBot:
         # 3. SOLID MADE HAND (EHS >= 0.55)
         if ehs >= 0.55:
             if to_call == 0:
+                # River check-back: realize showdown value with medium hands unless station
+                if street == "river":
+                    if self.opp_model.is_station and "raise" in legal and raises_left > 0 and random.random() < 0.60:
+                        return self.build_raise(req, 0.40)
+                    return {"type": "action", "action": "check"}
                 if "raise" in legal and raises_left > 0 and random.random() < 0.60:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
@@ -730,14 +791,6 @@ class PokerBot:
 
     # ---- Exploitative Adjustments ----
 
-    def adjust_postflop_ehs(self, ehs, history):
-        opp_raises = sum(1 for h in history if h.get("actor") == "opp" and h["action"] == "raise")
-        if self.opp_model.is_station and opp_raises >= 1:
-            ehs *= 0.80
-        if self.opp_model.is_maniac and opp_raises >= 1:
-            ehs = min(ehs * 1.15, 1.0)
-        return max(0.0, min(1.0, ehs))
-
     def should_bluff(self, street):
         if self.opp_model.is_station:
             return False
@@ -765,12 +818,9 @@ class PokerBot:
             return {"type": "action", "action": "raise", "amount": mn}
 
         if street == "preflop":
-            # Poker-standard preflop sizing
             if to_call <= 1:
-                # Button open: 2.5x BB (5 chips)
                 target = 5 if sizing >= 0.50 else 4
             else:
-                # 3-bet or 4-bet facing open/raise
                 if sizing >= 0.70:
                     target = int(opp_bet * 2.5) if opp_bet >= 10 else opp_bet * 3
                 elif sizing >= 0.45:
@@ -778,7 +828,6 @@ class PokerBot:
                 else:
                     target = mn
         else:
-            # Postflop geometric pot sizing
             pot_after_call = pot + to_call
             if sizing >= 0.90:
                 target = mx

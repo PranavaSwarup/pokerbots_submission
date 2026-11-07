@@ -820,6 +820,7 @@ class PokerBot:
         self.flop_cards = []
         self.hands_remaining = 200
         self.cumulative_net = 0
+        self.opp_raises_preflop = 0
 
     # ---- Dynamic Simulation Budget Controller ----
 
@@ -857,6 +858,7 @@ class PokerBot:
         self.flop_cards = []
         self.cached_discard = None
         self.cached_flop_ehs = None
+        self.opp_raises_preflop = 0
 
     def handle_discard_result(self, msg):
         self.my_discard = msg["my_discard"]
@@ -886,14 +888,27 @@ class PokerBot:
             return {"type": "discard", "card": self.cached_discard}
 
         n_samples = self.get_sim_budget(base=220)
-        best_card, _ = select_best_discard_ehs(hole, board, self.dead_cards, n_samples=n_samples)
+        best_card, best_equity = select_best_discard_ehs(
+            hole,
+            board,
+            self.dead_cards,
+            opp_raises_preflop=self.opp_raises_preflop,
+            n_samples=n_samples,
+        )
         self.cached_discard = best_card
+        self.cached_flop_ehs = best_equity
         return {"type": "discard", "card": best_card}
 
     # ---- Action Request ----
 
     def choose_action(self, req):
         self.time_left_ms = req.get("time_left_ms", self.time_left_ms)
+        self.opp_raises_preflop = sum(
+            1 for h in req.get("history", [])
+            if h.get("actor") == "opp"
+            and h.get("action") == "raise"
+            and h.get("street") == "preflop"
+        )
         street = req["street"]
         board = req.get("board", [])
         if street == "flop" and len(board) == 3:
@@ -1042,10 +1057,7 @@ class PokerBot:
 
         # Unified Flop vs Turn/River Evaluation with Discard Caching & Accurate Draw Potential
         has_draw_flag = False
-        opp_raises_preflop = sum(
-            1 for h in history
-            if h.get("actor") == "opp" and h["action"] == "raise" and h["street"] == "preflop"
-        )
+        opp_raises_preflop = self.opp_raises_preflop
         if street == "flop" and len(hole_ints) == 3:
             if self.cached_flop_ehs is not None:
                 ehs = self.cached_flop_ehs

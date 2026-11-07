@@ -899,7 +899,9 @@ class OpponentModel:
 
     @property
     def is_maniac(self):
-        return self.total_actions >= 12 and (self.af > 1.8 or self.pfr_pct > 0.50)
+        if self.total_actions < 16:
+            return False
+        return self.af >= 2.0 and (self.pfr_pct >= 0.40 or self.vpip_pct >= 0.55)
 
     @property
     def is_nit(self):

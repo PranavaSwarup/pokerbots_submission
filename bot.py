@@ -804,15 +804,17 @@ class PokerBot:
 
     # ---- Dynamic Simulation Budget Controller ----
 
-    def get_sim_budget(self, base=200):
+    def get_sim_budget(self, base=240):
         avg_ms_left = max(10.0, (self.time_left_ms - 2500.0) / max(self.hands_remaining * 3, 1))
         if self.time_left_ms < 4000:
             return 40   # Emergency fast mode
-        if avg_ms_left > 25.0:
+        if avg_ms_left > 35.0:
+            return int(base * 1.25)
+        elif avg_ms_left > 20.0:
             return base
-        elif avg_ms_left > 15.0:
+        elif avg_ms_left > 12.0:
             return int(base * 0.75)
-        elif avg_ms_left > 8.0:
+        elif avg_ms_left > 6.0:
             return int(base * 0.50)
         return max(30, int(base * 0.30))
 
@@ -919,6 +921,8 @@ class PokerBot:
                 if eq < 0.62 and not self.opp_model.is_maniac:
                     return self.fold_or_check(legal)
                 return self.call_or_check(legal)
+            if to_call > 4 and opp_raises == 1 and eq < 0.66 and not self.opp_model.is_maniac:
+                return self.call_or_check(legal)
             if "raise" in legal and raises_left > 0:
                 return self.build_raise(req, 0.50)
             return self.call_or_check(legal)
@@ -954,7 +958,7 @@ class PokerBot:
         if eq >= 0.30:
             if opp_raises >= 1:
                 # Defend against standard min-raises when receiving favorable pot odds
-                if to_call <= 2 or (to_call <= 3 and eq >= pot_odds + 0.04):
+                if to_call <= 2 or (to_call <= 3 and (eq >= pot_odds or (self.opp_model.is_maniac and eq >= pot_odds - 0.03))):
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
             if is_button:
@@ -1111,6 +1115,10 @@ class PokerBot:
                     return self.fold_or_check(legal)
                 if street == "river" and to_call > 50 and not self.opp_model.is_maniac and hand_cat < 2:
                     return self.fold_or_check(legal)
+                if street in ("flop", "turn") and "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
+                    if ehs >= 0.76 and (to_call <= 18 or self.opp_model.is_station or self.opp_model.is_maniac):
+                        sizing = 0.60 if spr > 2.5 else 0.70
+                        return self.build_raise(req, sizing)
                 call_margin = 0.00 if self.opp_model.is_maniac else 0.02
                 if ehs >= pot_odds + call_margin:
                     return self.call_or_check(legal)

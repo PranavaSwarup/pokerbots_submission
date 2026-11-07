@@ -65,10 +65,15 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - **Rank Boundary Restriction**: When an opponent is identified as a rank-based discarder, eliminates all candidate holdings containing cards lower than the exposed discard rank ($\min(o_1, o_2) < R_D$), focusing equity calculations with lethal precision.
 - **Preflop Steal & Limp Isolation**: Exploits nits and high fold-to-raise profiles with a 95% button open frequency, and isolates limping opponents with preflop raises to deny free flop realization.
 
-### 12. Dynamic Time-Bank Safety Controller
+### 12. Preflop 3-Bet Flatting & Tier 2 Postflop Value Raising
+- **In-Position 3-Bet Flatting**: When facing a 3-bet preflop with strong hands ($0.55 \le eq < 0.66$), flats in position instead of committing 35–40 chips preflop, preventing stack blowouts facing 5-bet shoves while realizing equity postflop.
+- **Big Blind Defense Calibration**: Defends the Big Blind against aggressive button 2.5x opens using exact pot odds against wide opener ranges.
+- **Tier 2 Postflop Value-Raising**: Facing bets on the flop or turn with $\text{EHS} \ge 0.76$, fires value raises (60–70% pot) instead of passive flat-calling, charging drawing opponents and accelerating chip accumulation.
+
+### 13. Dynamic Time-Bank Safety Controller
 - Continuously calculates per-decision time budgets:
   $$\text{Budget} = \frac{\text{Time Left} - 2.5\text{s}}{\text{Hands Remaining} \times 3}$$
-- Automatically scales Monte Carlo sample counts, guaranteeing zero timeouts or forfeits even on a throttled 1 vCPU evaluation environment.
+- Automatically scales Monte Carlo sample counts up to $N = 300$ during deep time bank availability, guaranteeing zero timeouts or forfeits even on a throttled 1 vCPU evaluation environment.
 
 ---
 

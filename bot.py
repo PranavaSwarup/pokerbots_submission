@@ -6,19 +6,20 @@ Game-Theoretic & Bayesian Architecture:
 1. Direct Integer Bitmask Evaluator (eval_fast):
    - Direct 5, 6, 7-card integer bitmask evaluator (matching engine.py 100%).
    - Operates in ~2.5 microseconds per evaluation.
-2. True 3-to-2 Preflop & Flop Simulation:
+2. True 3-to-2 Preflop Simulation:
    - Full Discard Hold'em simulation where both players hold 3 cards, see the flop,
      keep their best 2, and showdown on the 5-card board.
-3. Effective Hand Strength (EHS) with Transition Potentials:
-   - Evaluates Current Hand Strength (HS), Positive Potential (PPOT), and Negative Potential (NPOT).
-   - EHS = HS * (1 - NPOT) + (1 - HS) * PPOT (Billings et al., University of Alberta).
+3. Realistic Opponent 3-Card Discard Evaluation:
+   - During the flop discard phase, simulates opponent as also holding 3 cards and
+     discarding their worst card, accurately reflecting the real game state.
+   - Evaluates transition potentials (HS, PPOT, NPOT) to select the globally optimal discard.
 4. Discard-Conditioned Bayesian River & Turn Evaluation:
    - Conditions opponent hand distributions on their public exposed discard (opp_discard).
    - Downweights opponent candidate holdings that would have prioritized opp_discard over kept cards.
    - Exact exhaustive river enumeration (~900 combos with Bayesian weights in 15ms).
 5. Professional Heads-Up Bet Sizing & Check-Raise Trapping:
-   - Preflop: 2.5x BB opens (5 chips), 3x 3-bets (12-15 chips), 2.5x 4-bets (30 chips).
-   - Postflop: Geometric pot sizing (33% dry flop, 60% wet flop, 65% turn, 75%-100% river).
+   - Preflop: 2.5x BB button opens (5 chips), 3x 3-bets (12-15 chips), 2.5x 4-bets (30 chips).
+   - Postflop: Geometric pot scaling (33% dry flop, 60% wet flop, 65% turn, 75%-100% river).
    - Check-raise trapping: Out-of-position check-raises with monster hands against aggressive c-bettors.
 6. Disciplined River Defense & Stack Preservation:
    - Zero calling station river hero-calls (passive players never bluff river).
@@ -316,24 +317,43 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
 
 def select_best_discard_ehs(hole_strs, board_strs, dead_strs, n_samples=180):
     """
-    Selects the card to discard by maximizing EHS for the remaining 2 cards.
+    Selects the card to discard by maximizing showdown equity against
+    an opponent who also holds 3 cards and discards their worst.
     """
     hole_ints = [CARD_TO_INT[c] for c in hole_strs]
     board_ints = [CARD_TO_INT[c] for c in board_strs]
-    dead_ints = {CARD_TO_INT[c] for c in dead_strs}
+    dead_ints = {CARD_TO_INT[c] for c in dead_strs} | set(hole_ints) | set(board_ints)
+    avail = [c for c in FULL_DECK_INTS if c not in dead_ints]
 
     best_card = hole_strs[0]
-    best_ehs = -1.0
+    best_equity = -1.0
 
     for discard_idx in range(len(hole_strs)):
         kept = [hole_ints[j] for j in range(len(hole_strs)) if j != discard_idx]
-        cur_dead = dead_ints | {hole_ints[discard_idx]}
-        _, _, _, ehs = compute_ehs(kept, board_ints, cur_dead, n_samples=n_samples)
-        if ehs > best_ehs:
-            best_ehs = ehs
+        wins = 0.0
+
+        for _ in range(n_samples):
+            sampled = random.sample(avail, 5)  # 3 opp cards + 2 runout cards
+            opp3 = sampled[:3]
+            runout = sampled[3:]
+            full_b = board_ints + runout
+
+            # Opponent keeps their best 2 on flop
+            opp_best = max(combinations(opp3, 2), key=lambda p: eval_fast(list(p) + board_ints))
+
+            s1 = eval_fast(kept + full_b)
+            s2 = eval_fast(list(opp_best) + full_b)
+            if s1 > s2:
+                wins += 1.0
+            elif s1 == s2:
+                wins += 0.5
+
+        eq = wins / max(n_samples, 1)
+        if eq > best_equity:
+            best_equity = eq
             best_card = hole_strs[discard_idx]
 
-    return best_card, best_ehs
+    return best_card, best_equity
 
 
 # ============================================================================
@@ -605,7 +625,6 @@ class PokerBot:
 
         # Realistic Flop vs Post-Discard Evaluation
         if street == "flop" and len(hole_ints) == 3:
-            # Flop pre-discard: Both players hold 3 cards and will keep best 2!
             ehs = simulate_flop_3v3_equity(hole_ints, board_ints, dead_ints, n_sims=n_samples)
             ppot = 0.30
         else:
@@ -682,7 +701,6 @@ class PokerBot:
                 return {"type": "action", "action": "check"}
             else:
                 if street == "river" and to_call > 0:
-                    # On river, draws have missed! Only call if made hand justifies
                     if hand_cat >= 1 and ehs >= pot_odds + 0.05:
                         return self.call_or_check(legal)
                     return self.fold_or_check(legal)

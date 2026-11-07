@@ -158,6 +158,10 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - Folds single-pair holdings to three consecutive streets of bets (`opp_bet_flop and opp_bet_turn and to_call > 20`) against non-maniacs, preventing deep stack losses against polarized value lines.
 - Calibrates dynamic simulation budgets (`base = 150`) to guarantee lightning-fast execution (< 0.15s per 400 hands) and safe operation inside 1 vCPU / 1GB RAM tournament runtime limits.
 
+### 34. Preflop Nit-Raise Discipline & Range Deficit Folding
+- When an identified nit (`is_nit`) opens or raises preflop, their voluntary range is strictly concentrated in pocket pairs and premium Broadway holdings.
+- Disciplined range contraction: automatically folds marginal holdings ($eq < 0.52$) to nit opens instead of calling with negative implied odds, starving the nit of value while relentlessly stealing their blinds on all unraised hands.
+
 ---
 
 ## ⏱️ Benchmark & Performance
@@ -166,7 +170,7 @@ Tested under official local engine conditions (`engine.py`):
 
 | Matchup | Format | Score (Chips) | Result | Time Used / Leg Bank | Notices |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **vs `aggressive_bot.py`** | Stage 2 (1,000 hands) | **+32,340** | **Win (Capped +1000)** | **10.41 s** / 75.0 s | **0** |
+| **vs `aggressive_bot.py`** | Stage 2 (1,000 hands) | **+32,340** | **Win (Capped +1000)** | **7.51 s** / 75.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 123)** | Stage 2 (1,000 hands) | **+30,312** | **Win (Capped +1000)** | **6.20 s** / 75.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 555)** | Stage 2 (1,000 hands) | **+28,207** | **Win (Capped +1000)** | **18.96 s** / 75.0 s | **0** |
 | **vs `aggressive_bot.py` (seed 123)** | Stage 1 (400 hands) | **+12,061** | **Win (Capped +400)** | **0.00 s** / 30.0 s | **0** |

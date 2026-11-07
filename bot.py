@@ -1089,6 +1089,8 @@ class PokerBot:
             if opp_raises >= 2 or to_call > 15:
                 return self.fold_or_check(legal)
             if opp_raises == 1:
+                if self.opp_model.is_nit and eq < 0.52:
+                    return self.fold_or_check(legal)
                 if to_call <= 6 or eq >= pot_odds + 0.05:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
@@ -1114,6 +1116,8 @@ class PokerBot:
         # --- Marginal Hands (eq >= 0.30) ---
         if eq >= 0.30:
             if opp_raises >= 1:
+                if self.opp_model.is_nit:
+                    return self.fold_or_check(legal)
                 # Defend against standard min-raises when receiving favorable pot odds
                 if to_call <= 2 or (to_call <= 3 and (eq >= pot_odds or (self.opp_model.is_maniac and eq >= pot_odds - 0.03))):
                     return self.call_or_check(legal)

@@ -183,6 +183,19 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - **20% Latency Collapse**: Slashed per-evaluation time from 4.21 µs to 3.38 µs, dropping 1,000-hand Stage 2 match runtime to a historic **4.04 s** (2.02 s per leg out of 75.0 s), and 400-hand Self-Play runtime to **7.11 s** (3.55 s per leg out of 30.0 s).
 - **100% Deterministic Equivalence**: Fully certified across all 15,000+ verification test cases and verified against `engine.py`'s `best_hand`.
 
+### 39. Crash-Proof Message Loop & Re-Raise Range Conditioning
+- **Crash-proof protocol loop**: every handler is wrapped in `try/except`. An unexpected exception (malformed message, missing field, edge-case bug) is logged to stderr and answered with a safe legal fallback (check, else cheap call, else fold; discard the lowest card). Before this, any exception would crash the process and forfeit the whole match.
+- **Re-raise range conditioning** (`equity_vs_reraise_range`): when the opponent raises over our bet postflop, equity is recomputed against a range weighted by how often this opponent's re-raises have been value at showdown (`reraise_value_freq`, Beta(2,1) prior). EHS is capped by that equity on the current street and blended on later streets. It self-calibrates: against maniacs whose raises are random, the range stays near uniform.
+
+### Bot comparison (Pranava vs Ryan, Nov 2026)
+| Matchup | Format | Result |
+|---|---|---|
+| Pranava vs Ryan | Stage 1, 48 seeds | Pranava **+767 / match** |
+| Pranava vs Ryan | Stage 2, 6 seeds | Pranava wins 6/6, **+1,945 / match** |
+| Final bot vs Ryan | Stage 2, 6 seeds | wins 6/6, **+1,757 / match**, ~11 s used per 75 s leg |
+
+Ryan's bot scores more against the example aggressive and random bots, but both bots are far past the +C cap there. Head-to-head, Pranava's bot is clearly stronger, so it is the base of this submission.
+
 ---
 
 ## ⏱️ Benchmark & Performance

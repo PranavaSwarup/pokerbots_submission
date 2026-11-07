@@ -1105,7 +1105,7 @@ class PokerBot:
         # 1. MONSTER / NUTS (EHS >= 0.85)
         if ehs >= 0.85:
             # Check-raise trap: If OOP on flop/turn against aggressive bettor, check first
-            if to_call == 0 and self.seat == "big_blind" and self.opp_model.af > 1.2 and street in ("flop", "turn") and random.random() < 0.65:
+            if to_call == 0 and self.seat == "big_blind" and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and street in ("flop", "turn") and random.random() < 0.75:
                 return {"type": "action", "action": "check"}
             if "raise" in legal and raises_left > 0:
                 if street == "river" and ehs >= 0.95 and self.opp_model.is_station:

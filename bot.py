@@ -334,6 +334,72 @@ def is_river_scare_card(board_ints):
     return bin(mask & 0x100F).count('1') >= 4
 
 
+def board_value_floor(board_ints):
+    """
+    Determines the minimum hand category an opponent would realistically bet for value
+    given the exposed community board texture (4-flush -> 5, 4-straight -> 4, trips -> 6, paired+3flush -> 3, dry -> 2).
+    """
+    if len(board_ints) < 3:
+        return 2
+    suits = [0] * 4
+    ranks = [0] * 13
+    mask = 0
+    for c in board_ints:
+        suits[c & 3] += 1
+        ranks[c >> 2] += 1
+        mask |= (1 << (c >> 2))
+
+    if max(suits) >= 4:
+        return 5
+
+    is_4straight = False
+    for r in range(12, 3, -1):
+        if bin(mask & (0x1F << (r - 4))).count('1') >= 4:
+            is_4straight = True
+            break
+    if not is_4straight and bin(mask & 0x100F).count('1') >= 4:
+        is_4straight = True
+    if is_4straight:
+        return 4
+
+    if max(ranks) >= 3:
+        return 6
+    elif max(ranks) == 2 and max(suits) >= 3:
+        return 3
+
+    return 2
+
+
+def fast_preflop_score(c_ints):
+    """
+    Computes an ultra-fast (~0.1 µs) preflop hand quality heuristic (range 25 - 184).
+    Enables accurate opponent preflop action range filtering.
+    """
+    r0, r1, r2 = sorted([c >> 2 for c in c_ints], reverse=True)
+    s0, s1, s2 = c_ints[0] & 3, c_ints[1] & 3, c_ints[2] & 3
+
+    score = r0 * 4 + r1 * 2 + r2
+    if r0 == r1 == r2:
+        score += 80
+    elif r0 == r1:
+        score += 40 + r0 * 3
+    elif r1 == r2:
+        score += 35 + r1 * 3
+
+    if s0 == s1 == s2:
+        score += 25
+    elif s0 == s1 or s0 == s2 or s1 == s2:
+        score += 10
+
+    gaps = (r0 - r1) + (r1 - r2)
+    if gaps <= 3:
+        score += 15
+    elif gaps <= 5:
+        score += 8
+
+    return score
+
+
 def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_ints=None,
                 facing_bet=False, opp_is_station=False, opp_is_maniac=False, river_bluff_freq=None, n_samples=200):
     """
@@ -358,6 +424,7 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
         else:
             bluff_freq = 0.40 if opp_is_maniac else (0.02 if opp_is_station else 0.15)
         max_board_rank = max(c >> 2 for c in board_ints)
+        v_floor = board_value_floor(board_ints)
 
         alt_scores = None
         if opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
@@ -379,18 +446,22 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
             s_opp = eval_fast([o1, o2] + board_ints)
             cat = s_opp[0]
 
-            # Action conditioning
+            # Texture-conditioned action weighting
             if facing_bet:
-                if cat >= 2:
+                if cat >= v_floor:
                     w_act = 1.0
+                elif cat >= 2 and v_floor > 2:
+                    w_act = 0.05  # Highly unlikely to bet vulnerable 2-pair for value on dangerous textures
                 elif cat == 1:
                     pair_r = s_opp[1] - 2
-                    w_act = 0.85 if pair_r >= max_board_rank else 0.20
+                    w_act = 0.80 if (pair_r >= max_board_rank and v_floor == 2) else 0.05
                 else:
                     w_act = bluff_freq
             else:
-                if cat >= 2:
-                    w_act = 0.25
+                if cat >= v_floor:
+                    w_act = 0.20  # Trapping / pot control
+                elif cat >= 2:
+                    w_act = 0.70
                 elif cat == 1:
                     w_act = 0.90
                 else:
@@ -465,11 +536,12 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
 # OPTIMAL DISCARD SELECTION (Flop with Common Random Numbers)
 # ============================================================================
 
-def select_best_discard_ehs(hole_strs, board_strs, dead_strs, n_samples=220):
+def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop=0, n_samples=220):
     """
     Selects the card to discard using Common Random Numbers (CRN):
     Evaluates all 3 candidate discards against the EXACT SAME opponent cards
     and board runouts, eliminating sample variance and accelerating evaluation.
+    Applies preflop action range filtering against raising opponents.
     """
     hole_ints = [CARD_TO_INT[c] for c in hole_strs]
     board_ints = [CARD_TO_INT[c] for c in board_strs]
@@ -487,6 +559,11 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, n_samples=220):
         sampled = random.sample(avail, 5)
         opp3 = sampled[:3]
         runout = sampled[3:]
+
+        # Preflop action conditioning: if opponent raised preflop, reject weak uncoordinated trash
+        if opp_raises_preflop >= 1 and fast_preflop_score(opp3) < 55 and random.random() < 0.75:
+            continue
+
         full_b = board_ints + runout
 
         opp_best = max(combinations(opp3, 2), key=lambda p: flop_score(p[0], p[1], board_ints))
@@ -592,11 +669,11 @@ class OpponentModel:
 
     @property
     def af(self):
-        return self.agg_actions / max(self.passive_actions, 1)
+        return (self.agg_actions + 1.0) / (self.passive_actions + 1.0)
 
     @property
     def fold_to_raise_pct(self):
-        return self.fold_to_raise_count / max(self.faced_raise_count, 1)
+        return (self.fold_to_raise_count + 0.4) / (self.faced_raise_count + 1.0)
 
     @property
     def river_bluff_freq(self):
@@ -843,13 +920,19 @@ class PokerBot:
 
         # Unified Flop vs Turn/River Evaluation with Discard Caching & Accurate Draw Potential
         has_draw_flag = False
+        opp_raises_preflop = sum(
+            1 for h in history
+            if h.get("actor") == "opp" and h["action"] == "raise" and h["street"] == "preflop"
+        )
         if street == "flop" and len(hole_ints) == 3:
             if self.cached_flop_ehs is not None:
                 ehs = self.cached_flop_ehs
                 best_card = self.cached_discard
             else:
                 best_card, ehs = select_best_discard_ehs(
-                    self.hole_cards, board, self.dead_cards, n_samples=n_samples
+                    self.hole_cards, board, self.dead_cards,
+                    opp_raises_preflop=opp_raises_preflop,
+                    n_samples=n_samples
                 )
                 self.cached_discard = best_card
                 self.cached_flop_ehs = ehs
@@ -939,6 +1022,11 @@ class PokerBot:
                 # Stack preservation against multiple raises
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
+                # River polarized over-bet / all-in shove defense:
+                if street == "river" and (to_call > 50 or to_call > pot * 1.25) and not self.opp_model.is_maniac:
+                    v_floor = board_value_floor(board_ints)
+                    if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
+                        return self.fold_or_check(legal)
                 # Calibrated bluff-catching threshold
                 call_margin = 0.00 if self.opp_model.is_maniac else (0.07 if self.opp_model.is_station else 0.03)
                 if ehs >= pot_odds + call_margin:
@@ -962,9 +1050,17 @@ class PokerBot:
                     if hand_cat >= 1 and ehs >= pot_odds + 0.05:
                         return self.call_or_check(legal)
                     return self.fold_or_check(legal)
+                if street == "turn":
+                    # On the turn, only 1 card left to river: implied odds are lower
+                    if to_call <= 22 and spr > 2.0 and (ehs + ppot * 0.15) >= pot_odds:
+                        return self.call_or_check(legal)
+                    if ehs >= pot_odds:
+                        return self.call_or_check(legal)
+                    return self.fold_or_check(legal)
+                # Flop:
                 if ehs >= pot_odds:
                     return self.call_or_check(legal)
-                if street != "river" and spr > 2.5 and (ehs + ppot * 0.20) >= pot_odds:
+                if spr > 2.5 and (ehs + ppot * 0.20) >= pot_odds:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
 

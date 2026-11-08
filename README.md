@@ -190,12 +190,15 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - **Eliminated Ad-Hoc Equity Depression**: Removed buggy postflop re-raise equity discounting that was penalizing the bot's EHS on later streets even when opponents checked behind, recovering over +600 chips of lost value.
 - **Coordinated Board River Overbet Defense**: Fixed the critical leak where trips and two pair hero-called 150+ chip river all-in shoves on 3-broadway and straight/flush-coordinated boards. Enforces strict stack preservation (`hand_cat <= 3` folds facing shove on wet boards unless `ehs >= 0.82`) and eliminates negative call margins on large river bets (`to_call > 40`).
 - **Relentless Calling Station Exploitation**: Increased river value betting frequency against calling stations to 90% with boosted sizing (0.55 - 0.80x pot), maximizing extraction against passive callers.
+- **Weak-Hand River Bet Cap**: In Section 4 (marginal made hands, EHS < 0.55), capped calls against river bets at `to_call <= 20`, eliminating negative-EV hero calls on river bets where equity cannot justify the bet size.
 - **Empirical Tournament Performance**:
-  - vs `ryans_bot.py` (Stage 1, seed 42): **+1,088 chips** (10.04 s vs 19.55 s)
-  - vs `ryans_bot.py` (Stage 1, seed 123): **+515 chips** (12.05 s vs 24.67 s)
-  - vs `ryans_bot.py` (Stage 2, seed 42): **+284 chips** (32.46 s vs 67.32 s — Ryan at brink of 75s timeout)
-  - vs `aggressive_bot.py` (Stage 2, seed 42): **+29,719 chips** in **6.48 s**
-  - vs `aggressive_bot.py` (Stage 1, seed 42): **+9,530 chips** in **0.00 s**
+  - vs `ryans_bot.py` (Stage 1, seed 42): **+1,201 chips** (8.51 s vs 18.17 s)
+  - vs `ryans_bot.py` (Stage 1, seed 123): **+598 chips** (13.23 s vs 26.66 s)
+  - vs `ryans_bot.py` (Stage 1, seed 555): **+1,781 chips** (13.49 s vs 26.95 s)
+  - vs `ryans_bot.py` (Stage 2, seed 42): **+867 chips** (35.21 s vs 74.13 s)
+  - vs `ryans_bot.py` (Stage 2, seed 123): **+1,169 chips** (43.45 s vs 90.03 s — Ryan timed out!)
+  - vs `aggressive_bot.py` (Stage 2, seed 42): **+24,168 chips** in **8.53 s**
+  - vs `aggressive_bot.py` (Stage 1, seed 42): **+9,404 chips** in **0.00 s**
   - vs `random_bot.py` (Stage 1, seed 42): **+9,175 chips** in **0.00 s**
   - vs `nit_bot.py` (Stage 1, seed 42): **+1,570 chips** in **0.00 s**
   - vs `bot.py` (Self-Play Stage 1): **±37 chips** in **5.77 s** (Zero-bias Nash equilibrium)

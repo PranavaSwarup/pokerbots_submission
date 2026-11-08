@@ -1405,6 +1405,8 @@ class PokerBot:
                 return {"type": "action", "action": "check"}
             else:
                 if street == "river" and to_call > 0:
+                    if to_call > 20:
+                        return self.fold_or_check(legal)
                     v_floor = board_value_floor(board_ints)
                     if spr <= 0.35 and to_call <= 15 and ehs >= pot_odds:
                         return self.call_or_check(legal)

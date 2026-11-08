@@ -759,109 +759,6 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
 # OPPONENT MODEL (Tracking & Adaptation)
 # ============================================================================
 
-# ============================================================================
-# RE-RAISE RANGE CONDITIONING (postflop raises over our bets)
-# ============================================================================
-
-POSTFLOP_STREETS = ("flop", "turn", "river")
-
-
-def opp_reraised_postflop(history, streets=POSTFLOP_STREETS):
-    """True if the opponent raised over one of our bets on any of the given streets."""
-    me_bet = set()
-    for h in history:
-        st = h.get("street")
-        if st not in streets or h.get("action") != "raise":
-            continue
-        if h.get("actor") == "me":
-            me_bet.add(st)
-        elif h.get("actor") == "opp" and st in me_bet:
-            return True
-    return False
-
-
-def hand_value_class(o_ints, b_ints):
-    """Value score in [0, 1] of a 2-card holding on a board (hole cards must contribute)."""
-    s = eval_fast(o_ints + b_ints)
-    cat = s[0]
-    o_ranks = {c >> 2 for c in o_ints}
-    if cat >= 3:
-        if len(b_ints) == 5 and eval_fast(b_ints) == s:
-            return 0.0  # plays the board
-        return 1.0
-    if cat == 2:
-        hi_in = (s[1] - 2) in o_ranks
-        lo_in = (s[2] - 2) in o_ranks
-        if hi_in and lo_in:
-            return 1.0
-        if hi_in or lo_in:
-            return 0.5
-        return 0.0
-    if cat == 1:
-        pair_r = s[1] - 2
-        if pair_r in o_ranks and pair_r >= max(c >> 2 for c in b_ints):
-            return 0.25
-    return 0.0
-
-
-def equity_vs_reraise_range(hole_ints, board_ints, dead_ints, value_freq, n_samples=150, opp_three=False):
-    """
-    Monte Carlo equity of our 2 kept cards against the opponent's range conditioned on
-    a postflop raise over our bet. Holdings are weighted by how often the opponent's
-    re-raises have been value at showdown (value_freq): vs value-heavy raisers, made
-    two pair+ dominates the range; vs maniacs, the range stays close to uniform.
-    """
-    known = set(hole_ints) | set(board_ints) | set(dead_ints)
-    avail = [c for c in FULL_DECK_INTS if c not in known]
-    need = 5 - len(board_ints)
-    bluffy = max(0.0, min(1.0, (1.0 - value_freq) / 0.7))
-    w_air = max(0.03, bluffy)
-    w_pair = max(0.12, bluffy)
-    w_draw = max(0.35, bluffy)
-    take = (3 if opp_three else 2) + need
-    win = 0.0
-    tot = 0.0
-    for _ in range(n_samples):
-        smp = random.sample(avail, take)
-        if opp_three:
-            o3 = smp[:3]
-            best = None
-            best_s = None
-            for i in range(3):
-                pair = [o3[j] for j in range(3) if j != i]
-                sc = eval_fast(pair + board_ints)
-                if best_s is None or sc > best_s:
-                    best_s = sc
-                    best = pair
-            opp = best
-            runout = smp[3:]
-        else:
-            opp = smp[:2]
-            runout = smp[2:]
-
-        vc = hand_value_class(opp, board_ints)
-        if vc >= 1.0:
-            w = 1.0
-        elif vc >= 0.5:
-            w = max(0.6, bluffy)
-        else:
-            w = w_pair if vc > 0 else w_air
-            if need > 0:
-                dcat, _ = draw_potential(opp + board_ints, is_turn=(need == 1))
-                if dcat in ('combo', 'flush', 'oesd'):
-                    w = max(w, w_draw)
-
-        full_b = board_ints + runout
-        my_fin = eval_fast(hole_ints + full_b)
-        opp_fin = eval_fast(opp + full_b)
-        if my_fin > opp_fin:
-            win += w
-        elif my_fin == opp_fin:
-            win += 0.5 * w
-        tot += w
-    return win / tot if tot > 0 else 0.5
-
-
 class OpponentModel:
     """Tracks opponent metrics to enable Game-Theoretic and Exploitative play."""
 
@@ -880,23 +777,9 @@ class OpponentModel:
         self.showdown_river_bluffs = 0.0
         self.opp_rank_discard_count = 0
         self.opp_discard_showdown_count = 0
-        # Postflop re-raise (raise over our bet) showdown strength tracking
-        self.reraise_sd = 0
-        self.reraise_strong = 0.0
 
     def update(self, result, opp_discard, history, opp_hole_cards=None, board=None):
         self.hands_seen += 1
-
-        # Showdown re-raise strength analysis: was the opponent's raise over our bet value?
-        if result == "showdown" and opp_hole_cards and board and len(board) == 5:
-            if opp_reraised_postflop(history):
-                try:
-                    o_ints = [CARD_TO_INT[c] for c in opp_hole_cards]
-                    b_ints = [CARD_TO_INT[c] for c in board]
-                    self.reraise_sd += 1
-                    self.reraise_strong += hand_value_class(o_ints, b_ints)
-                except (KeyError, IndexError):
-                    pass
         if opp_discard and opp_discard in CARD_TO_INT:
             self.discard_ranks.append(RV.get(opp_discard[0], 7))
 
@@ -998,11 +881,6 @@ class OpponentModel:
             if avg_r <= 5.5 and max_r <= 8:
                 return True
         return False
-
-    @property
-    def reraise_value_freq(self):
-        # Beta(2, 1) prior: postflop raises over a bet are value-heavy in most populations
-        return (self.reraise_strong + 2.0) / (self.reraise_sd + 3.0)
 
     @property
     def river_bluff_freq(self):
@@ -1398,33 +1276,6 @@ class PokerBot:
 
         hand_cat = made_rank[0]
 
-        # --- Re-raise range conditioning ---
-        # A raise over our bet (check-raise / bet-raise) narrows the opponent's range far more
-        # than a lead bet. Recompute equity vs that range, weighted by how often this opponent's
-        # re-raises have been value at showdown, and cap EHS with it.
-        reraised_now = to_call > 0 and opp_reraised_postflop(history, (street,))
-        prev_streets = POSTFLOP_STREETS[:POSTFLOP_STREETS.index(street)]
-        reraised_prev = bool(prev_streets) and opp_reraised_postflop(history, prev_streets)
-        if (reraised_now or reraised_prev) and ehs >= 0.35:
-            if street == "flop":
-                my_kept = [c for c in hole_ints if c != CARD_TO_INT[best_card]]
-                eq_dead = set()
-                opp_three = True
-            else:
-                my_kept = hole_ints
-                eq_dead = set(dead_ints)
-                if opp_disc_int is not None:
-                    eq_dead.add(opp_disc_int)
-                opp_three = False
-            eq_rr = equity_vs_reraise_range(
-                my_kept, board_ints, eq_dead, self.opp_model.reraise_value_freq,
-                n_samples=max(60, n_samples), opp_three=opp_three
-            )
-            if reraised_now:
-                ehs = min(ehs, eq_rr)
-            else:
-                ehs = min(ehs, 0.5 * ehs + 0.5 * eq_rr)
-
         if to_call > 0:
             pot_odds = to_call / (pot + to_call)
             mdf = pot / (pot + to_call)
@@ -1524,8 +1375,12 @@ class PokerBot:
                     v_floor = board_value_floor(board_ints)
                     if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
                         return self.fold_or_check(legal)
+                    if hand_cat <= 3 and (is_board_wet(board_ints) or v_floor >= 3) and ehs < 0.82:
+                        return self.fold_or_check(legal)
                 # Continuous Bayesian bluff-catching call margin:
                 call_margin = max(-0.04, min(0.08, 0.20 - self.opp_model.river_bluff_freq))
+                if street == "river" and to_call > 40:
+                    call_margin = max(0.05, call_margin)
                 if ehs >= pot_odds + call_margin:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
@@ -1746,8 +1601,6 @@ def main():
 
         msg_type = msg.get("type")
 
-        # Every handler is guarded: an unexpected exception must never crash the process
-        # (a crash forfeits the whole match). Replies fall back to a safe legal action.
         if msg_type == "action_request":
             try:
                 reply = bot.choose_action(msg)

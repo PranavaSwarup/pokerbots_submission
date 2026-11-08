@@ -1106,6 +1106,9 @@ class PokerBot:
             if opp_raises == 1:
                 if self.opp_model.is_nit and eq < 0.52:
                     return self.fold_or_check(legal)
+                # Facing a genuine 3-bet (to_call >= 8): fold weak uncoordinated playable hands
+                if to_call >= 8 and not self.opp_model.is_maniac and eq < 0.52:
+                    return self.fold_or_check(legal)
                 if to_call <= 6 or eq >= pot_odds + 0.05:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)

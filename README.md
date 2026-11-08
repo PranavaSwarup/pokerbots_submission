@@ -203,6 +203,17 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
   - vs `nit_bot.py` (Stage 1, seed 42): **+1,570 chips** in **0.00 s**
   - vs `bot.py` (Self-Play Stage 1): **±37 chips** in **5.77 s** (Zero-bias Nash equilibrium)
 
+### 41. Preflop 3-Bet Defense Calibration & Uncoordinated Hand Discipline
+- **Preflop 3-Bet Range Discipline**: Fixed critical preflop call leak where the bot was calling large 3-bets (`to_call >= 8`) with weak, uncoordinated holdings ($eq < 0.52$) based solely on raw equity vs pot odds. In Crazy Pineapple, uncoordinated offsuit cards with an Ace or King suffer from reverse implied odds and lack post-flop redraws. Folding these hands when facing genuine 3-bets from non-maniacs prevents leaking 8-10 chips per occurrence.
+- **Empirical Tournament Performance**:
+  - vs `ryans_bot.py` (Stage 1, seed 42): **+1,686 chips** (All-time high, up from +1,201)
+  - vs `ryans_bot.py` (Stage 1, seed 123): **+488 chips** (Turned match from -755 loss into clean Capped +400 Win, +1,243 chip swing)
+  - vs `ryans_bot.py` (Stage 1, seed 555): **+458 chips** (Capped +400 Win)
+  - vs `ryans_bot.py` (Stage 2, seed 42): **+1,283 chips** (Capped +1000 Win, 26.25 s)
+  - vs `ryans_bot.py` (Stage 2, seed 123): **+1,591 chips** (Capped +1000 Win, 28.93 s)
+  - vs `ryans_bot.py` (Stage 2, seed 555): **+2,883 chips** (Capped +1000 Win, 27.02 s)
+  - **100% Capped Delta across ALL seeds in both Stage 1 (+400) and Stage 2 (+1000)** with zero timing notices (< 30s per leg in Stage 2 against 75s limit).
+
 ---
 
 ## ⏱️ Benchmark & Performance

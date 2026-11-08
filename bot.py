@@ -782,6 +782,28 @@ class OpponentModel:
         self.rb_fold = 0           # ... that they folded to
         self.vb_called = 0         # value bets (EHS >= 0.55) they called
         self.vb_called_lost = 0.0  # ... where they turned out to be ahead
+        # Responses to OUR first-in flop / turn bets
+        self.street_bet_faced = {"flop": 0, "turn": 0}
+        self.street_bet_fold = {"flop": 0, "turn": 0}
+
+    def record_street_bet_response(self, history, street):
+        """Did the opponent fold to our first-in bet on this street?"""
+        bet_idx = None
+        for i, h in enumerate(history):
+            if h.get("street") == street and h.get("actor") == "me" and h.get("action") == "raise":
+                bet_idx = i
+                break
+        if bet_idx is None:
+            return
+        for h in history[bet_idx + 1:]:
+            if h.get("street") == street and h.get("actor") == "opp":
+                self.street_bet_faced[street] += 1
+                if h.get("action") == "fold":
+                    self.street_bet_fold[street] += 1
+                return
+
+    def street_fold_rate(self, street):
+        return (self.street_bet_fold[street] + 1.2) / (self.street_bet_faced[street] + 3.0)
 
     def record_river_bet_response(self, history, bet_ehs, net):
         """Profile how the opponent responds to our first-in river bets."""
@@ -979,6 +1001,7 @@ class PokerBot:
         self.opp_raises_preflop = 0
         self.river_bet_ehs = None
         self.last_ehs = 0.5
+        self.first_bet_streets = set()
 
     def roll(self, tag=""):
         """Deterministic, process-independent SplitMix32 uniform pseudo-random roll in [0, 1)."""
@@ -1030,6 +1053,7 @@ class PokerBot:
         self.opp_raises_preflop = 0
         self.river_bet_ehs = None
         self.last_ehs = 0.5
+        self.first_bet_streets = set()
 
     def handle_discard_result(self, msg):
         self.my_discard = msg["my_discard"]
@@ -1040,6 +1064,9 @@ class PokerBot:
     def handle_hand_result(self, msg):
         self.cumulative_net += msg.get("net", 0)
         self.hands_remaining -= 1
+        for st in self.first_bet_streets:
+            self.opp_model.record_street_bet_response(msg.get("history", []), st)
+        self.first_bet_streets = set()
         if self.river_bet_ehs is not None:
             self.opp_model.record_river_bet_response(
                 msg.get("history", []), self.river_bet_ehs, msg.get("net", 0)
@@ -1090,6 +1117,8 @@ class PokerBot:
         # Remember river bets made first-in so the opponent's response can be profiled
         if street == "river" and req.get("to_call", 0) == 0 and reply.get("action") == "raise":
             self.river_bet_ehs = self.last_ehs
+        if street in ("flop", "turn") and req.get("to_call", 0) == 0 and reply.get("action") == "raise":
+            self.first_bet_streets.add(street)
         return reply
 
     # ---- Preflop Logic ----
@@ -1360,6 +1389,9 @@ class PokerBot:
             # In-position slow-play on dry flop boards vs aggressive opponents:
             if to_call == 0 and self.seat == "button" and street == "flop" and not is_board_wet(board_ints) and (self.opp_model.af > 1.2 or self.opp_model.is_maniac) and self.roll("flop:dry_trap") < 0.30:
                 return {"type": "action", "action": "check"}
+            # Tight river caller: only continues with better -> non-nut monsters bet small
+            if to_call == 0 and street == "river" and ehs < 0.95 and self.opp_model.vb_called >= 4 and self.opp_model.value_call_lose_rate >= 0.50:
+                return self.build_raise(req, 0.30)
             if "raise" in legal and raises_left > 0:
                 if street == "river" and ehs >= 0.95 and self.opp_model.is_station:
                     sizing = 1.00
@@ -1538,6 +1570,10 @@ class PokerBot:
             rfr = self.opp_model.river_fold_rate
             if rfr >= 0.55:
                 return self.roll("river:fold_exploit") < min(0.75, (rfr - 0.33) * 2.0)
+        # Direct flop/turn evidence: pure-air bluffs need folds; a ~40% pot bet breaks even near 29%
+        if street in ("flop", "turn") and self.opp_model.street_bet_faced[street] >= 8:
+            if self.opp_model.street_fold_rate(street) < 0.33:
+                return False
         if self.opp_model.is_station or self.opp_model.fold_to_raise_pct < 0.25:
             return False
         if street == "river":

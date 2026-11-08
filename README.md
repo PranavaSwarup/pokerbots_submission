@@ -232,6 +232,22 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 | vs `aggressive_bot.py`, 8 seeds | +9,709 | +8,985 (both ≫ cap) |
 | vs `nit_bot.py`, 4 seeds | +1,570 | +1,570 |
 
+### 43. Small River Value Bets vs Tight Callers & Street-Level Bluff Discipline
+- **Finding** (exact equity from revealed cards, 12 matches each vs `ryans_bot.py` and the previous version of this bot): 677 of 747 big river value bets got folds, and when big river bets were called or raised we were behind 117 times and ahead only 70. On the turn, when we bet while behind (equity < 30%), opponents folded only 4 times in about 280.
+- **Small river value bets vs tight callers**: when `value_call_lose_rate >= 0.50` (4+ samples), strong-but-not-nut river hands (EHS 0.85–0.95) bet small (~35% pot) instead of overbetting. Nut hands (EHS ≥ 0.95) still bet big. Checking these hands instead was also tested and gained nothing.
+- **Street-level bluff discipline**: the opponent's fold rate to our first-in flop and turn bets is tracked per street (`street_fold_rate`). With 8+ samples and a fold rate below 33%, pure-air bluffs on that street stop. Semi-bluffs with draws are unaffected.
+- **Results** (fresh seeds not used for tuning, our bot as A):
+
+| Matchup | Previous version | New version |
+|---|---|---|
+| New vs previous version, Stage 1, 64 seeds | — | **+73 / match** |
+| vs `ryans_bot.py`, Stage 1, 32 seeds | +487 | **+857** |
+| vs `ryans_bot.py`, Stage 2, 4 seeds | — | 4/4 wins, **+3,220 / match**, ~11 s per 75 s leg, 0 notices |
+| vs tight-aggressive test bot, 16 seeds | +552 | +524 (noise) |
+| vs calling-station test bot, 8 seeds | +12,202 | +12,134 (noise) |
+| vs `aggressive_bot.py`, 8 seeds | +8,795 | +8,999 |
+| vs `nit_bot.py`, 4 seeds | +1,569 | +1,569 |
+
 ---
 
 ## ⏱️ Benchmark & Performance

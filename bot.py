@@ -777,6 +777,47 @@ class OpponentModel:
         self.showdown_river_bluffs = 0.0
         self.opp_rank_discard_count = 0
         self.opp_discard_showdown_count = 0
+        # Responses to OUR first-in river bets
+        self.rb_faced = 0          # river bets of ours the opponent responded to
+        self.rb_fold = 0           # ... that they folded to
+        self.vb_called = 0         # value bets (EHS >= 0.55) they called
+        self.vb_called_lost = 0.0  # ... where they turned out to be ahead
+
+    def record_river_bet_response(self, history, bet_ehs, net):
+        """Profile how the opponent responds to our first-in river bets."""
+        last_bet_idx = None
+        for i, h in enumerate(history):
+            if h.get("street") == "river" and h.get("actor") == "me" and h.get("action") == "raise":
+                last_bet_idx = i
+                break
+        if last_bet_idx is None:
+            return
+        resp = None
+        for h in history[last_bet_idx + 1:]:
+            if h.get("street") == "river" and h.get("actor") == "opp":
+                resp = h.get("action")
+                break
+        if resp is None:
+            return
+        self.rb_faced += 1
+        if resp == "fold":
+            self.rb_fold += 1
+        elif resp == "call" and bet_ehs >= 0.55:
+            self.vb_called += 1
+            if net < 0:
+                self.vb_called_lost += 1.0
+            elif net == 0:
+                self.vb_called_lost += 0.5
+
+    @property
+    def river_fold_rate(self):
+        # Prior ~40% folds, weight 3
+        return (self.rb_fold + 1.2) / (self.rb_faced + 3.0)
+
+    @property
+    def value_call_lose_rate(self):
+        # Prior ~33%: a called value bet is normally ahead
+        return (self.vb_called_lost + 1.0) / (self.vb_called + 3.0)
 
     def update(self, result, opp_discard, history, opp_hole_cards=None, board=None):
         self.hands_seen += 1
@@ -936,6 +977,8 @@ class PokerBot:
         self.hands_remaining = 200
         self.cumulative_net = 0
         self.opp_raises_preflop = 0
+        self.river_bet_ehs = None
+        self.last_ehs = 0.5
 
     def roll(self, tag=""):
         """Deterministic, process-independent SplitMix32 uniform pseudo-random roll in [0, 1)."""
@@ -985,6 +1028,8 @@ class PokerBot:
         self.cached_flop_ehs = None
         self.cached_flop_ppot = None
         self.opp_raises_preflop = 0
+        self.river_bet_ehs = None
+        self.last_ehs = 0.5
 
     def handle_discard_result(self, msg):
         self.my_discard = msg["my_discard"]
@@ -995,6 +1040,11 @@ class PokerBot:
     def handle_hand_result(self, msg):
         self.cumulative_net += msg.get("net", 0)
         self.hands_remaining -= 1
+        if self.river_bet_ehs is not None:
+            self.opp_model.record_river_bet_response(
+                msg.get("history", []), self.river_bet_ehs, msg.get("net", 0)
+            )
+            self.river_bet_ehs = None
         self.opp_model.update(
             msg.get("result"),
             msg.get("opp_discard"),
@@ -1036,8 +1086,11 @@ class PokerBot:
 
         if street == "preflop":
             return self.act_preflop(req)
-        else:
-            return self.act_postflop(req)
+        reply = self.act_postflop(req)
+        # Remember river bets made first-in so the opponent's response can be profiled
+        if street == "river" and req.get("to_call", 0) == 0 and reply.get("action") == "raise":
+            self.river_bet_ehs = self.last_ehs
+        return reply
 
     # ---- Preflop Logic ----
 
@@ -1278,6 +1331,7 @@ class PokerBot:
                 ppot = max(ppot, ppot_val)
 
         hand_cat = made_rank[0]
+        self.last_ehs = ehs
 
         if to_call > 0:
             pot_odds = to_call / (pot + to_call)
@@ -1320,6 +1374,9 @@ class PokerBot:
                 if street == "river":
                     v_floor = board_value_floor(board_ints)
                     if hand_cat < v_floor:
+                        return {"type": "action", "action": "check"}
+                    # Tight river caller: our called value bets are behind too often -> check thin value
+                    if self.opp_model.vb_called >= 4 and self.opp_model.value_call_lose_rate >= 0.50:
                         return {"type": "action", "action": "check"}
                     if "raise" in legal and raises_left > 0:
                         sizing = 0.75 if self.opp_model.is_station else (0.65 if self.opp_model.is_maniac else 0.45)
@@ -1475,6 +1532,12 @@ class PokerBot:
     # ---- Exploitative Adjustments ----
 
     def should_bluff(self, street, board_ints=None, checked_through_prev=False):
+        # Direct river evidence: the opponent over-folds to our river bets (a ~50% pot bluff
+        # breaks even at 33% folds). Bluff in proportion to the observed surplus fold rate.
+        if street == "river" and self.opp_model.rb_faced >= 5:
+            rfr = self.opp_model.river_fold_rate
+            if rfr >= 0.55:
+                return self.roll("river:fold_exploit") < min(0.75, (rfr - 0.33) * 2.0)
         if self.opp_model.is_station or self.opp_model.fold_to_raise_pct < 0.25:
             return False
         if street == "river":

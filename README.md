@@ -214,6 +214,24 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
   - vs `ryans_bot.py` (Stage 2, seed 555): **+2,883 chips** (Capped +1000 Win, 27.02 s)
   - **100% Capped Delta across ALL seeds in both Stage 1 (+400) and Stage 2 (+1000)** with zero timing notices (< 30s per leg in Stage 2 against 75s limit).
 
+### 42. Adaptive River Bet-Response Exploitation
+- **Finding** (12 Stage 1 matches vs `ryans_bot.py`, judged against both players' revealed cards): when we bet the river, Ryan's bot folded 77% of the time, mostly when we were already ahead (762 of 816 folds). When it called our river bets, it was ahead more often than behind (122 vs 98). So thin value bets lost chips, and river bluffs were almost never fired even though they would get folds.
+- **Tracking** (`OpponentModel.record_river_bet_response`): records the opponent's response to every first-in river bet of ours. It gives two smoothed rates: `river_fold_rate` (prior ~40%) and `value_call_lose_rate`, how often they are ahead when they call our value bets (prior ~33%).
+- **Bluffing over-folders**: once there are 5 or more samples and they fold 55%+ of the time, missed hands bluff the river with probability `min(0.75, (fold_rate - 0.33) * 2)`, whether or not a scare card hit. A ~50% pot bluff breaks even at 33% folds.
+- **Checking thin value vs tight callers**: once there are 4 or more called value bets and they win 50%+ of the time, river hands with EHS 0.70–0.85 check instead of betting. Monster hands (EHS ≥ 0.85) still bet.
+- It adapts per opponent and stays off against calling stations (low fold rate) and loose callers.
+- **Results** (multi-seed, our bot as A):
+
+| Matchup | Previous version | With this change |
+|---|---|---|
+| vs previous version (self-play), Stage 1, 48 seeds | — | **+242 / match** |
+| vs `ryans_bot.py`, Stage 1, 48 seeds | +616 | **+756** |
+| vs `ryans_bot.py`, Stage 2, 4 seeds | — | 4/4 wins, **+2,870 / match**, 0 notices |
+| vs tight-aggressive test bot, 16 seeds | +568 | **+701** |
+| vs calling-station test bot, 8 seeds | +12,153 | +12,280 |
+| vs `aggressive_bot.py`, 8 seeds | +9,709 | +8,985 (both ≫ cap) |
+| vs `nit_bot.py`, 4 seeds | +1,570 | +1,570 |
+
 ---
 
 ## ⏱️ Benchmark & Performance

@@ -1362,6 +1362,11 @@ class PokerBot:
         hand_cat = made_rank[0]
         self.last_ehs = ehs
 
+        max_b_rank = max((c >> 2 for c in board_ints), default=0)
+        hole_ranks = {c >> 2 for c in (hole_ints if street != "flop" else kept_ints)}
+        pair_r = (made_rank[1] - 2) if hand_cat == 1 else -1
+        is_second_pair_or_lower = (hand_cat == 1 and (pair_r not in hole_ranks or pair_r < max_b_rank))
+
         if to_call > 0:
             pot_odds = to_call / (pot + to_call)
             mdf = pot / (pot + to_call)
@@ -1459,6 +1464,14 @@ class PokerBot:
                 # Stack preservation against multiple raises
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
+                # Turn defense: do not pay the turn tax with second pair or lower facing a double-barrel or 3-bet pot bet
+                if street == "turn" and not self.opp_model.is_maniac:
+                    if (opp_bet_flop or opp_raises_preflop >= 1) and (to_call > 20 or to_call > pot * 0.40):
+                        if (hand_cat == 0 or is_second_pair_or_lower) and not (has_draw_flag or ppot >= 0.20):
+                            return self.fold_or_check(legal)
+                    if opp_raises_this_street >= 1 and any(h.get("actor") == "me" and h.get("action") == "raise" and h.get("street") == "turn" for h in history):
+                        if hand_cat <= 1 and draw_cat != 'combo':
+                            return self.fold_or_check(legal)
                 # Triple-barrel defense: fold one pair to 3 streets of bets from non-maniacs
                 if street == "river" and opp_bet_flop and opp_bet_turn and to_call > 20 and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22 and hand_cat <= 1:
                     return self.fold_or_check(legal)
@@ -1512,6 +1525,14 @@ class PokerBot:
                             return self.call_or_check(legal)
                     return self.fold_or_check(legal)
                 if street == "turn":
+                    # Turn defense: do not pay turn tax with second pair or pure air facing double-barrel / 3-bet pot bet
+                    if not self.opp_model.is_maniac:
+                        if (opp_bet_flop or opp_raises_preflop >= 1) and (to_call > 20 or to_call > pot * 0.40):
+                            if (hand_cat == 0 or is_second_pair_or_lower) and not (has_draw_flag or ppot >= 0.20):
+                                return self.fold_or_check(legal)
+                        if opp_raises_this_street >= 1 and any(h.get("actor") == "me" and h.get("action") == "raise" and h.get("street") == "turn" for h in history):
+                            if hand_cat <= 1 and draw_cat != 'combo':
+                                return self.fold_or_check(legal)
                     # Semi-bluff raise turn with combo draws facing single bet vs folders
                     if "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
                         if draw_cat == 'combo' and to_call <= 18 and self.opp_model.fold_to_raise_pct > 0.45 and not self.opp_model.is_station:
@@ -1570,6 +1591,8 @@ class PokerBot:
             rfr = self.opp_model.river_fold_rate
             if rfr >= 0.55:
                 return self.roll("river:fold_exploit") < min(0.75, (rfr - 0.33) * 2.0)
+            elif rfr < 0.33:
+                return False
         # Direct flop/turn evidence: pure-air bluffs need folds; a ~40% pot bet breaks even near 29%
         if street in ("flop", "turn") and self.opp_model.street_bet_faced[street] >= 8:
             if self.opp_model.street_fold_rate(street) < 0.33:

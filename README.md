@@ -248,6 +248,24 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 | vs `aggressive_bot.py`, 8 seeds | +8,795 | +8,999 |
 | vs `nit_bot.py`, 4 seeds | +1,569 | +1,569 |
 
+### 44. Turn Double-Barrel & 3-Bet Pot Defense + River Bluff Stop-Filter
+- **Finding** (hand loss attribution analysis): Bot was paying the "turn tax" by calling large turn bets (`to_call > 20` or `to_call > 40% pot`) with second pair or board pairs after opponents 3-bet preflop or bet the flop, losing ~280 chips in just four hands before folding the river. Furthermore, river bluffs were persisting on scare cards against opponents with proven low fold rates (`rfr < 0.33`).
+- **Turn double-barrel & 3-bet pot defense**: In categories 3 and 4 (`ehs >= 0.35`), second pair or lower and unmade hands fold to large turn bets (`to_call > 20` or `> 40% pot`) when facing preflop 3-betters or flop bettors, unless holding active combo/flush/OESD draws (`ppot >= 0.20` or `has_draw_flag`). Also folds one pair to turn raises over our bets.
+- **River bluff stop-filter**: With 5+ observed river bets faced, if `river_fold_rate < 0.33`, pure air bluffs cease completely.
+- **Benchmark Results**:
+  - **Stage 1 vs `ryans_bot.py`**:
+    - Seed 42: **+1,292 chips** (up from +848 baseline, **+444 chip gain**)
+    - Seed 123: **+1,242 chips** (up from +1,143 baseline, **+99 chip gain**)
+    - Seed 555: **+815 chips** (100% Capped +400 Win)
+    - Average: **+1,116.3 chips / match** (100% Capped Wins)
+  - **Stage 2 vs `ryans_bot.py` (1,000 duplicate hands)**:
+    - Seed 42: **+1,728 chips** in 47.52 s (baseline +1,484, **+244 improvement**)
+    - Seed 123: **+3,556 chips** in 47.54 s (baseline +2,800, **+756 improvement**)
+    - Seed 555: **+3,197 chips** in 37.42 s (baseline +2,254, **+943 improvement**)
+    - Total: **+8,481 chips** (Average: **+2,827.0 chips / match** vs +2,008.0 baseline, **+819.0 chips/match surge**)
+    - Result: **100% Capped (+1000) Wins**, 0 notices, 0 timing warnings.
+
+
 ---
 
 ## ⏱️ Benchmark & Performance

@@ -290,6 +290,37 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
     - vs `nit_bot.py`: **+1,572 chips** (Stage 1 Seed 42, 100% clean win)
     - vs `random_bot.py`: **+5,420 chips** (Stage 1 Seed 42, up from +3,192)
 
+### 47. Preflop 3-Bet Coordination Filter, Turn Double-Barrel Defense & Category 5 Calibration
+- **Finding** (hand loss attribution analysis):
+  1. *Uncoordinated 3-bet preflop calls*: In `L1 #103`, the bot called a 3-bet to 15 with uncoordinated rag Aces (`As 2h 6h`, equity 0.541), got dominated on an Ace-high flop, and lost 200 chips. Uncoordinated offsuit cards facing substantial 3-bets suffer massive reverse implied odds.
+  2. *Category 5 turn calling leak*: In Category 5 (`ehs in [0.20, 0.35)`), the bot lacked a turn facing-bet gate. In large pots, pot odds dropped to ~0.29, causing the bot to call 42-chip turn bets with 3rd/4th pair with only 1 card to come, only to fold river or lose at showdown (`L2 #46`).
+  3. *Over-bet shoving turn with two-pair*: In Category 2 (`ehs >= 0.70`), line 1445 parenthesized `(to_call <= 18 or self.opp_model.is_station or self.opp_model.is_maniac)`, allowing `is_station` to completely bypass `to_call <= 18` and turn-shove all-in for 128+ chips into trips.
+  4. *Multi-raise stack protection on paired boards*: When facing 3-bets on paired boards (`v_floor >= 2`), holding an overpair (`Qc Qs` on `Jc Jh 6s`, `L2 #26`) only represents one pair in hand. Calling 56-chip 3-bets with one pair in hand burned stacks.
+  5. *Low flush draw over-calling*: Calling 50-chip turn bets with an 8-high flush draw on a 3-flush board (`L1 #27`) resulted in heavy losses to higher flushes and trips.
+- **Strategic Implementation**:
+  - `is_coordinated_3card`: Enforces coordination rules (pocket pair, 3 broadways, suited high cards, or connectors) for 3-bet defense; folds uncoordinated hands with `eq < 0.60`.
+  - Category 5 Turn Gate: Restricts turn calling in Category 5 to `to_call <= 12`.
+  - Category 2 Sizing Fix: Strict `to_call <= 18` check prevents turning two-pair into all-in shoves against large bets.
+  - Paired Board 3-Bet Defense: Treats `hand_cat == 2` on paired boards (`v_floor >= 2`) as single pair in hand, folding to multi-raises.
+  - Turn Double-Barrel Nut Draw Check: Rejects low flush draws (max flush card < 10) on 3-flush boards facing large bets (>18).
+- **Benchmark Results vs `ryans_bot.py`**:
+  - **Stage 1 (400 duplicate hands)**:
+    - Seed 42: **+1,948 chips** in 10.89 s (up from +1,696 baseline, **+252 chip surge**)
+    - Seed 123: **+1,769 chips** in 11.28 s (up from +1,261 baseline, **+508 chip surge**)
+    - Seed 555: **+1,537 chips** in 10.37 s (up from +1,365 baseline, **+172 chip surge**)
+    - Total: **+5,254 chips** (Average: **+1,751.3 chips / match** vs +1,440.7 baseline, **+310.6 chips/match surge**, **+932 total chips surge**)
+    - Result: **100% Capped (+400) Wins**, 0 notices, 0 timing warnings.
+  - **Stage 2 (1,000 duplicate hands)**:
+    - Seed 42: **+2,861 chips** in 38.78 s (up from +2,413 baseline, **+448 chip surge**)
+    - Seed 123: **+3,378 chips** in 37.33 s (100% Capped +1000 Win)
+    - Seed 555: **+4,128 chips** in 40.90 s (up from +2,492 / +3,230 baseline, **+1,636 chip surge**)
+    - Total: **+10,367 chips** (Average: **+3,455.7 chips / match** vs +3,126.7 baseline, **+329.0 chips/match surge**, **+987 total chips surge**)
+    - Result: **100% Capped (+1000) Wins**, 0 notices, 0 timing warnings.
+  - **Sanity Checks vs Other Archetypes**:
+    - vs `aggressive_bot.py`: **+3,302 chips** (Stage 1 Seed 42, 100% Capped +400 Win)
+    - vs `nit_bot.py`: **+1,572 chips** (Stage 1 Seed 42, 100% Capped +400 Win)
+    - vs `random_bot.py`: **+6,137 chips** (Stage 1 Seed 42, 100% Capped +400 Win)
+
 
 
 ---

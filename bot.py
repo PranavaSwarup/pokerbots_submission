@@ -261,6 +261,27 @@ def get_preflop_equity(hole_cards):
     return PREFLOP_LUT.get(pk, 0.50)
 
 
+def is_coordinated_3card(cards):
+    """Detects whether a 3-card Pineapple holding has sufficient coordination / synergy to defend a 3-bet."""
+    ranks = sorted(RV.get(c[0], 0) for c in cards)
+    suits = [c[1] for c in cards]
+    if len(set(ranks)) < 3:
+        return True
+    if ranks[0] >= 10:
+        return True
+    suit_counts = {s: suits.count(s) for s in set(suits)}
+    for s, count in suit_counts.items():
+        if count >= 2:
+            s_ranks = sorted(RV.get(c[0], 0) for c in cards if c[1] == s)
+            if s_ranks[-1] >= 10:
+                return True
+            if s_ranks[1] - s_ranks[0] <= 2 and s_ranks[0] >= 5:
+                return True
+    if ranks[2] - ranks[1] == 1 and ranks[1] >= 9:
+        return True
+    return False
+
+
 
 
 def flop_score(c1, c2, flop_ints):
@@ -1174,6 +1195,9 @@ class PokerBot:
                 if eq < min_eq:
                     return self.fold_or_check(legal)
                 return self.call_or_check(legal)
+            if opp_raises == 1 and to_call >= 8 and not self.opp_model.is_maniac:
+                if eq < 0.58 and not is_coordinated_3card(self.hole_cards):
+                    return self.fold_or_check(legal)
             # Flat single preflop opens with medium-strong holdings to control pot size
             if opp_raises == 1 and eq < 0.66 and not self.opp_model.is_maniac:
                 return self.call_or_check(legal)
@@ -1188,9 +1212,10 @@ class PokerBot:
             if opp_raises == 1:
                 if self.opp_model.is_nit and eq < 0.52:
                     return self.fold_or_check(legal)
-                # Facing a genuine 3-bet (to_call >= 8): fold weak uncoordinated playable hands
-                if to_call >= 8 and not self.opp_model.is_maniac and eq < 0.52:
-                    return self.fold_or_check(legal)
+                # Facing a genuine 3-bet (to_call >= 8): fold weak or uncoordinated hands
+                if to_call >= 8 and not self.opp_model.is_maniac:
+                    if eq < 0.55 or not is_coordinated_3card(self.hole_cards):
+                        return self.fold_or_check(legal)
                 if to_call <= 6 or eq >= pot_odds + 0.05:
                     return self.call_or_check(legal)
                 return self.fold_or_check(legal)
@@ -1430,11 +1455,11 @@ class PokerBot:
                     return self.build_raise(req, sizing)
                 return {"type": "action", "action": "check"}
             else:
-                if opp_raises_this_street >= 2 and hand_cat <= 1:
+                v_floor = board_value_floor(board_ints)
+                if opp_raises_this_street >= 2 and (hand_cat <= 1 or (hand_cat == 2 and v_floor >= 2)):
                     return self.fold_or_check(legal)
                 # River polarized over-bet / all-in shove defense:
                 if street == "river" and (to_call > 50 or to_call > pot * 1.25) and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22:
-                    v_floor = board_value_floor(board_ints)
                     if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
                         return self.fold_or_check(legal)
                     if hand_cat <= 3 and (is_board_wet(board_ints) or v_floor >= 3) and ehs < 0.82:
@@ -1442,7 +1467,7 @@ class PokerBot:
                 if street == "river" and to_call > 50 and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22 and hand_cat < 2:
                     return self.fold_or_check(legal)
                 if street in ("flop", "turn") and "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
-                    if ehs >= 0.76 and (to_call <= 18 or self.opp_model.is_station or self.opp_model.is_maniac):
+                    if ehs >= 0.76 and to_call <= 18 and (self.opp_model.is_station or self.opp_model.is_maniac or spr > 2.0):
                         sizing = 0.60 if spr > 2.5 else 0.70
                         return self.build_raise(req, sizing)
                 call_margin = 0.00 if self.opp_model.is_maniac else 0.02
@@ -1475,13 +1500,24 @@ class PokerBot:
                 if street == "river" and self.opp_model.is_station and self.opp_model.river_bluff_freq <= 0.10 and hand_cat < 2:
                     return self.fold_or_check(legal)
                 # Stack preservation against multiple raises
-                if opp_raises_this_street >= 2 and hand_cat <= 1:
+                v_floor = board_value_floor(board_ints)
+                if opp_raises_this_street >= 2 and (hand_cat <= 1 or (hand_cat == 2 and v_floor >= 2)):
                     return self.fold_or_check(legal)
                 # Turn defense: do not pay the turn tax with second pair or lower facing a double-barrel or 3-bet pot bet
                 if street == "turn" and not self.opp_model.is_maniac:
-                    if (opp_bet_flop or opp_raises_preflop >= 1) and (to_call > 20 or to_call > pot * 0.40):
-                        if (hand_cat == 0 or is_second_pair_or_lower) and not (has_draw_flag or ppot >= 0.20):
-                            return self.fold_or_check(legal)
+                    if (opp_bet_flop or opp_raises_preflop >= 1) and (to_call > 18 or to_call > pot * 0.35):
+                        if (hand_cat == 0 or is_second_pair_or_lower):
+                            if not has_draw_flag:
+                                return self.fold_or_check(legal)
+                            if draw_cat == 'flush':
+                                suits_on_b = [0, 0, 0, 0]
+                                for c in board_ints:
+                                    suits_on_b[c & 3] += 1
+                                max_s = max(range(4), key=lambda s: suits_on_b[s])
+                                if suits_on_b[max_s] >= 3:
+                                    my_suit_ranks = [(c >> 2) for c in hole_ints if (c & 3) == max_s]
+                                    if my_suit_ranks and max(my_suit_ranks) < 10:
+                                        return self.fold_or_check(legal)
                     if opp_raises_this_street >= 1 and any(h.get("actor") == "me" and h.get("action") == "raise" and h.get("street") == "turn" for h in history):
                         if hand_cat <= 1 and draw_cat != 'combo':
                             return self.fold_or_check(legal)
@@ -1540,9 +1576,19 @@ class PokerBot:
                 if street == "turn":
                     # Turn defense: do not pay turn tax with second pair or pure air facing double-barrel / 3-bet pot bet
                     if not self.opp_model.is_maniac:
-                        if (opp_bet_flop or opp_raises_preflop >= 1) and (to_call > 20 or to_call > pot * 0.40):
-                            if (hand_cat == 0 or is_second_pair_or_lower) and not (has_draw_flag or ppot >= 0.20):
-                                return self.fold_or_check(legal)
+                        if (opp_bet_flop or opp_raises_preflop >= 1) and (to_call > 18 or to_call > pot * 0.35):
+                            if (hand_cat == 0 or is_second_pair_or_lower):
+                                if not has_draw_flag:
+                                    return self.fold_or_check(legal)
+                                if draw_cat == 'flush':
+                                    suits_on_b = [0, 0, 0, 0]
+                                    for c in board_ints:
+                                        suits_on_b[c & 3] += 1
+                                    max_s = max(range(4), key=lambda s: suits_on_b[s])
+                                    if suits_on_b[max_s] >= 3:
+                                        my_suit_ranks = [(c >> 2) for c in hole_ints if (c & 3) == max_s]
+                                        if my_suit_ranks and max(my_suit_ranks) < 10:
+                                            return self.fold_or_check(legal)
                         if opp_raises_this_street >= 1 and any(h.get("actor") == "me" and h.get("action") == "raise" and h.get("street") == "turn" for h in history):
                             if hand_cat <= 1 and draw_cat != 'combo':
                                 return self.fold_or_check(legal)
@@ -1576,6 +1622,8 @@ class PokerBot:
                 return {"type": "action", "action": "check"}
             else:
                 if street == "river" and to_call > 18:
+                    return self.fold_or_check(legal)
+                if street == "turn" and to_call > 12:
                     return self.fold_or_check(legal)
                 if ehs >= pot_odds:
                     return self.call_or_check(legal)

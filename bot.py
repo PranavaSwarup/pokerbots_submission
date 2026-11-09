@@ -1575,6 +1575,8 @@ class PokerBot:
                     return self.build_raise(req, 0.40)
                 return {"type": "action", "action": "check"}
             else:
+                if street == "river" and to_call > 18:
+                    return self.fold_or_check(legal)
                 if ehs >= pot_odds:
                     return self.call_or_check(legal)
                 # In-Position Flop Float: see opponent's discard and capture positional advantage

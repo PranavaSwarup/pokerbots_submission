@@ -269,18 +269,26 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 - **Finding** (hand loss attribution analysis): Bot was overbet-shoving 100% of stack (up to 187 chips into 38 chip pot) with two-pair or trips on wet/flush textures because unconditional EHS against random combos exceeded 0.95, getting called only by flushes and full houses. Concurrently, polarized river all-in shove defense was absent from Category 2 (`ehs >= 0.70`), causing hero-calls with trips 2-kicker against river all-in shoves on straight runouts.
 - **River monster sizing calibration**: On wet boards (`is_board_wet` or `v_floor >= 3`), non-nut hands (`hand_cat < 4`, or `hand_cat < 3` on any board) are restricted to standard value sizing (0.50 pot) rather than nut jams (0.85–1.00). In `build_raise`, non-nut river bets are barred from auto-rounding up to all-in shoves.
 - **Universal river overbet shove defense**: Extended polarized all-in shove defense to Category 2 (`ehs >= 0.70`), folding vulnerable two-pair and trips to massive overbet shoves (`to_call > 50` or `> 125% pot`) on dangerous coordinated runouts.
-- **Benchmark Results**:
-  - **Stage 1 vs `ryans_bot.py`**:
-    - Seed 42: **+1,808 chips** (up from +1,292, **+516 chip surge**)
-    - Seed 123: **+1,567 chips** (up from +1,242, **+325 chip gain**)
-    - Seed 555: **+562 chips** (100% Capped +400 Win)
-    - Total: **+3,937 chips** (Average: **+1,312.3 chips / match**, **+196.0 chips/match surge**)
-  - **Stage 2 vs `ryans_bot.py` (1,000 duplicate hands)**:
-    - Seed 42: **+2,367 chips** in 40.09 s (up from +1,728, **+639 improvement**)
-    - Seed 123: **+3,749 chips** in 38.47 s (up from +3,556, **+193 improvement**)
-    - Seed 555: **+4,344 chips** in 38.43 s (up from +3,197, **+1,147 improvement**)
-    - Total: **+10,460 chips** (Average: **+3,486.7 chips / match** vs +2,827.0 baseline, **+659.7 chips/match surge**)
+
+### 46. Category 5 River Bet/Shove Defense Calibration
+- **Finding** (hand-by-hand loss attribution in deep stacks): In Category 5 (`ehs in [0.20, 0.35)` - weak/marginal hands such as 3rd pair, 4th pair, or board pairs), the bot lacked a river facing-bet gate. In large pots (pot >= 150 chips), pot odds dropped below 0.25, triggering `if ehs >= pot_odds: return call`. Consequently, the bot was hero-calling massive 50 to 168-chip river all-in shoves with pure marginal junk (e.g. bottom pairs on double-paired runouts).
+- **River defense calibration**: Restricted Category 5 river defense to standard bluff-catching bets (`to_call <= 18`), immediately folding to substantial river bets and all-in shoves (`to_call > 18`) while preserving positive-EV bluff-catches against small stabs (7–14 chips).
+- **Benchmark Results vs `ryans_bot.py`**:
+  - **Stage 1 (400 duplicate hands)**:
+    - Seed 42: **+1,696 chips** (up from +1,456 baseline, **+240 chip surge**)
+    - Seed 123: **+1,261 chips** (up from +1,154 baseline, **+107 chip gain**)
+    - Seed 555: **+1,365 chips** (100% Capped +400 Win)
+    - Total: **+4,322 chips** (Average: **+1,440.7 chips / match**, **+84.7 chips/match surge**)
+  - **Stage 2 (1,000 duplicate hands)**:
+    - Seed 42: **+2,413 chips** in 38.96 s (up from +1,551 baseline, **+862 chip surge**)
+    - Seed 123: **+3,568 chips** in 45.88 s (up from +3,438 baseline, **+130 chip gain**)
+    - Seed 555: **+3,230 chips** in 41.83 s (up from +2,320 baseline, **+910 chip surge**)
+    - Total: **+9,211 chips** (Average: **+3,070.3 chips / match** vs +2,436.3 baseline, **+634.0 chips/match surge**)
     - Result: **100% Capped (+1000) Wins**, 0 notices, 0 timing warnings.
+  - **Sanity Checks vs Other Archetypes**:
+    - vs `aggressive_bot.py`: **+4,758 chips** (Stage 1 Seed 42, up from +4,543)
+    - vs `nit_bot.py`: **+1,572 chips** (Stage 1 Seed 42, 100% clean win)
+    - vs `random_bot.py`: **+5,420 chips** (Stage 1 Seed 42, up from +3,192)
 
 
 

@@ -1398,10 +1398,16 @@ class PokerBot:
             if to_call == 0 and street == "river" and ehs < 0.95 and self.opp_model.vb_called >= 4 and self.opp_model.value_call_lose_rate >= 0.50:
                 return self.build_raise(req, 0.30)
             if "raise" in legal and raises_left > 0:
-                if street == "river" and ehs >= 0.95 and self.opp_model.is_station:
-                    sizing = 1.00
+                if street == "river":
+                    v_floor = board_value_floor(board_ints)
+                    if hand_cat < 3 or (hand_cat < 4 and (is_board_wet(board_ints) or v_floor >= 3)):
+                        sizing = 0.50
+                    elif ehs >= 0.95 and self.opp_model.is_station:
+                        sizing = 1.00
+                    else:
+                        sizing = 0.85 if spr < 2.0 else 0.70
                 else:
-                    sizing = 0.85 if (street == "river" or spr < 2.0) else 0.65
+                    sizing = 0.85 if spr < 2.0 else 0.65
                 return self.build_raise(req, sizing)
             return self.call_or_check(legal)
 
@@ -1426,6 +1432,13 @@ class PokerBot:
             else:
                 if opp_raises_this_street >= 2 and hand_cat <= 1:
                     return self.fold_or_check(legal)
+                # River polarized over-bet / all-in shove defense:
+                if street == "river" and (to_call > 50 or to_call > pot * 1.25) and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22:
+                    v_floor = board_value_floor(board_ints)
+                    if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
+                        return self.fold_or_check(legal)
+                    if hand_cat <= 3 and (is_board_wet(board_ints) or v_floor >= 3) and ehs < 0.82:
+                        return self.fold_or_check(legal)
                 if street == "river" and to_call > 50 and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22 and hand_cat < 2:
                     return self.fold_or_check(legal)
                 if street in ("flop", "turn") and "raise" in legal and raises_left > 0 and opp_raises_this_street <= 1:
@@ -1671,7 +1684,10 @@ class PokerBot:
 
         amount = max(mn, min(mx, target))
         if amount >= mx * 0.75:
-            amount = mx
+            if street == "river" and eff_sizing < 0.85:
+                pass
+            else:
+                amount = mx
 
         return {"type": "action", "action": "raise", "amount": amount}
 

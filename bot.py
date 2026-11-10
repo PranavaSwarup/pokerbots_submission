@@ -1271,7 +1271,7 @@ class PokerBot:
                 if self.opp_model.fold_to_raise_pct > 0.50:
                     def_freq = 0.60
                 elif self.opp_model.is_station:
-                    def_freq = 0.00
+                    def_freq = 0.65 if eq >= 0.48 else 0.00
                 if "raise" in legal and self.roll("pf:bb_playable") < def_freq:
                     return self.build_raise(req, 0.35)
                 return self.call_or_check(legal)

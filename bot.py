@@ -353,18 +353,48 @@ def draw_potential(c_ints, is_turn=False):
     Distinguishes combo draws (12-15 outs), flush draws (9 outs), OESDs (8 outs),
     and gutshots (4 outs) to avoid costly negative-EV calls on weak inside draws.
     Accurately accounts for 2 cards to come on flop vs 1 card to come on turn.
+    Requires at least one hole card to contribute to the draw, eliminating false-positive
+    phantom draws from wet board textures.
     Returns (draw_category, ppot_estimate).
     """
-    suits = [0, 0, 0, 0]
-    mask = 0
-    for c in c_ints:
-        suits[c & 3] += 1
-        mask |= (1 << (c >> 2))
+    if len(c_ints) < 5:
+        return ('none', 0.03)
 
-    is_flush_draw = (suits[0] >= 4 or suits[1] >= 4 or suits[2] >= 4 or suits[3] >= 4)
-    dt = DRAW_TYPE_TABLE[mask]
-    is_oesd = (dt == 2)
-    is_gutshot = (dt == 1)
+    hole = c_ints[:2]
+    board = c_ints[2:]
+    h_ranks = {c >> 2 for c in hole}
+
+    # 1. Flush draw: 4+ cards of a suit, with at least 1 in our hole cards
+    b_suits = [0, 0, 0, 0]
+    for c in board:
+        b_suits[c & 3] += 1
+
+    is_flush_draw = False
+    for s in range(4):
+        h_cnt = sum(1 for c in hole if (c & 3) == s)
+        if h_cnt >= 1 and (b_suits[s] + h_cnt) >= 4:
+            is_flush_draw = True
+            break
+
+    # 2. Straight draw: count ranks completing a straight that uses our hole cards
+    b_mask = 0
+    for c in board:
+        b_mask |= (1 << (c >> 2))
+
+    straight_outs = 0
+    for r in range(13):
+        if not (b_mask & (1 << r)):
+            new_b_mask = b_mask | (1 << r)
+            board_only_st = STRAIGHT_HIGH_TABLE[new_b_mask]
+            total_mask = new_b_mask
+            for hr in h_ranks:
+                total_mask |= (1 << hr)
+            with_hole_st = STRAIGHT_HIGH_TABLE[total_mask]
+            if with_hole_st > 0 and with_hole_st > board_only_st:
+                straight_outs += 1
+
+    is_oesd = (straight_outs >= 2)
+    is_gutshot = (straight_outs == 1)
 
     if is_turn:
         # 1 card to come (river) - 46 unseen cards

@@ -351,6 +351,34 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
     - vs `nit_bot.py`: **+1,572 chips** (Stage 1 Seed 42, 100% Capped +400 Win)
     - vs `random_bot.py`: **+4,623 chips** (Stage 1 Seed 42, 100% Capped +400 Win)
 
+### 49. Hole-Card Participation Draw Verification & Phantom-Draw Elimination (+1,663 Stage 1 Surge to All-Time Record +6,419 Chips)
+- **Finding & Empirical Loss Attribution**:
+  - *Phantom draws from wet community boards*: In previous versions, `draw_potential` evaluated all input cards (`hole_ints + board_ints`) collectively through suit counts and `DRAW_TYPE_TABLE[mask]` without requiring hole-card participation. When the community board contained 4 of a suit or 4 to a straight, the bot hallucinated that it held a flush draw or open-ended straight draw even with zero matching hole cards. This caused erroneous turn floats, semi-bluff raises, and over-calling against double-barrels.
+- **Strategic Implementation**:
+  - **Phantom-Draw Elimination**: Replaced naive collective card masks with strict hole-card participation requirements:
+    1. *Flush Draws*: Requires at least 1 hole card of the matching suit (`h_cnt >= 1 and b_suits[s] + h_cnt >= 4`).
+    2. *Straight Draws*: Requires that completing the straight strictly utilizes our hole cards (`with_hole_st > board_only_st`). If the straight is completed entirely by community cards, it is rejected.
+- **Benchmark Results vs `ryans_bot.py`**:
+  - **Stage 1 (400 duplicate hands)**:
+    - Seed 42: **+1,886 chips** in 11.37 s (up from +1,753 baseline, **+133 surge**)
+    - Seed 123: **+2,135 chips** in 12.64 s (up from +1,067 baseline, **+1,068 chip surge!**)
+    - Seed 555: **+2,398 chips** in 9.68 s (up from +1,936 baseline, **+462 chip surge!**)
+    - Total: **+6,419 chips** (Average: **+2,139.7 chips / match** vs +1,585.3 baseline, **+554.4 chips/match surge**, **+1,663 total chips surge**, **NEW ALL-TIME RECORD**)
+    - Result: **100% Capped (+400) Wins**, 0 notices, 0 timing warnings.
+  - **Stage 2 (1,000 duplicate hands)**:
+    - Seed 42: **+3,600 chips** in 34.56 s (100% Capped +1000 Win)
+    - Seed 123: **+4,072 chips** in 42.70 s (100% Capped +1000 Win)
+    - Seed 555: **+3,399 chips** in 31.87 s (100% Capped +1000 Win)
+    - Total: **+11,071 chips** (Average: **+3,690.3 chips / match**, 100% Capped +1000 Wins). Time used <= 42.70s / 75.0s per leg.
+  - **Performance vs Upstream Strategy Bots (Stage 1 Seed 42)**:
+    - vs `calling_station.py`: **+5,490 chips** (100% Capped +400 Win)
+    - vs `bluffer_bot.py`: **+3,715 chips** (100% Capped +400 Win)
+    - vs `all_in.py`: **+3,508 chips** (Stage 1), **+15,136 chips** (Stage 2)
+    - vs `mixed_strategy_bot.py`: **+2,184 chips** (100% Capped +400 Win)
+    - vs `trapper_bot.py`: **+1,632 chips** (100% Capped +400 Win)
+    - vs `positional_bot.py`: **+1,613 chips** (100% Capped +400 Win)
+    - vs `pot_odds_bot.py`: **+600 chips** (100% Capped +400 Win)
+
 
 
 ---

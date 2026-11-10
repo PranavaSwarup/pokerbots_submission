@@ -613,8 +613,11 @@ def compute_ehs(hole_ints, board_ints, dead_ints, opp_discard_int=None, flop_int
     if opp_pool is None and opp_discard_int is not None and flop_ints is not None and len(flop_ints) == 3:
         alt_scores = {o: flop_score(o, opp_discard_int, flop_ints) for o in avail}
 
+    t_start = time.monotonic()
     while valid_samples < n_samples and attempts < max_attempts:
         attempts += 1
+        if (attempts & 31 == 0) and (time.monotonic() - t_start > 1.0):
+            break
         if opp_pool is not None and random.random() < 0.95:
             opp = random.sample(opp_pool, 2)
             while True:
@@ -718,9 +721,12 @@ def select_best_discard_ehs(hole_strs, board_strs, dead_strs, opp_raises_preflop
     valid_samples = 0
     attempts = 0
     max_attempts = n_samples * 3
+    t_start = time.monotonic()
 
     while valid_samples < n_samples and attempts < max_attempts:
         attempts += 1
+        if (attempts & 31 == 0) and (time.monotonic() - t_start > 1.2):
+            break
         sampled = random.sample(avail, 5)
         opp3 = sampled[:3]
         runout = sampled[3:]
@@ -1407,6 +1413,34 @@ class PokerBot:
             if h.get("actor") == "opp" and h["action"] == "raise" and h["street"] == street
         )
 
+        # Turn massive raise/shove defense against reverse-domination:
+        if street == "turn" and to_call > 40 and not self.opp_model.is_maniac:
+            ranks_b = [0] * 13
+            suits_b = [0] * 4
+            for c in board_ints:
+                ranks_b[c >> 2] += 1
+                suits_b[c & 3] += 1
+            max_r = max(ranks_b)
+            max_s = max(suits_b)
+            flush_s = max(range(4), key=lambda s: suits_b[s])
+
+            # Paired turn board facing a huge raise: two pair is crushed by trips/boats
+            if max_r >= 2 and hand_cat <= 2:
+                return self.fold_or_check(legal)
+            # Paired turn board: trips with low kicker (< King) folds to all-in re-raise
+            if max_r >= 2 and hand_cat == 3 and to_call > 80:
+                hole_ranks = [c >> 2 for c in hole_ints]
+                if max(hole_ranks) < 11:
+                    return self.fold_or_check(legal)
+            # 3-flush turn board: straight or trips crushed by flushes
+            if max_s >= 3 and hand_cat <= 4:
+                return self.fold_or_check(legal)
+            # 3+ flush turn board: low flush (< King) folds to massive 3-bet shove
+            if max_s >= 3 and hand_cat == 5 and to_call > 80:
+                my_flush_ranks = [(c >> 2) for c in hole_ints if (c & 3) == flush_s]
+                if not my_flush_ranks or max(my_flush_ranks) < 11:
+                    return self.fold_or_check(legal)
+
         # ====================================================================
         # DECISION MATRIX (Using Action-Conditioned EHS, MDF, and Pot Odds)
         # ====================================================================
@@ -1425,7 +1459,7 @@ class PokerBot:
             if "raise" in legal and raises_left > 0:
                 if street == "river":
                     v_floor = board_value_floor(board_ints)
-                    if hand_cat < 3 or (hand_cat < 4 and (is_board_wet(board_ints) or v_floor >= 3)):
+                    if hand_cat < 3 or (hand_cat <= 4 and (is_board_wet(board_ints) or v_floor >= 3)):
                         sizing = 0.50
                     elif ehs >= 0.95 and self.opp_model.is_station:
                         sizing = 1.00
@@ -1462,7 +1496,7 @@ class PokerBot:
                 if street == "river" and (to_call > 50 or to_call > pot * 1.25) and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22:
                     if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
                         return self.fold_or_check(legal)
-                    if hand_cat <= 3 and (is_board_wet(board_ints) or v_floor >= 3) and ehs < 0.82:
+                    if hand_cat <= 4 and (is_board_wet(board_ints) or v_floor >= 3) and ehs < 0.82:
                         return self.fold_or_check(legal)
                 if street == "river" and to_call > 50 and not self.opp_model.is_maniac and self.opp_model.river_bluff_freq < 0.22 and hand_cat < 2:
                     return self.fold_or_check(legal)
@@ -1529,7 +1563,7 @@ class PokerBot:
                     v_floor = board_value_floor(board_ints)
                     if hand_cat < 3 and not (hand_cat == 2 and v_floor == 2 and ehs >= 0.75):
                         return self.fold_or_check(legal)
-                    if hand_cat <= 3 and (is_board_wet(board_ints) or v_floor >= 3) and ehs < 0.82:
+                    if hand_cat <= 4 and (is_board_wet(board_ints) or v_floor >= 3) and ehs < 0.82:
                         return self.fold_or_check(legal)
                 # Continuous Bayesian bluff-catching call margin:
                 call_margin = max(-0.04, min(0.08, 0.20 - self.opp_model.river_bluff_freq))
@@ -1559,6 +1593,10 @@ class PokerBot:
                 return {"type": "action", "action": "check"}
             else:
                 if street == "river" and to_call > 0:
+                    v_floor = board_value_floor(board_ints)
+                    # High made straight on non-4flush boards (covers chop straights and standard bets):
+                    if hand_cat == 4 and v_floor < 5 and to_call <= 40 and ehs >= pot_odds:
+                        return self.call_or_check(legal)
                     if to_call > 20:
                         return self.fold_or_check(legal)
                     v_floor = board_value_floor(board_ints)

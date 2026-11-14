@@ -406,6 +406,24 @@ Autonomous algorithmic poker bot designed for the **Discard Hold'em** variant un
 
 
 
+### 51. River Small-Bet Minimum Defence & Two-Paired Board Value Floor
+- **Round-robin selection**: this bot was played against every strong bot in [RyanSajan/All_Out](https://github.com/RyanSajan/All_Out) (`best_bot`, `bot.py`, `champion_bot`, `player`, `test`) over 15 pairings × 24 seeds, and won on summed capped delta (+11,592 vs `best_bot` +9,515).
+- **River small-bet defence** (exact-equity analysis of revealed showdown cards vs `best_bot`): we were folding to river bets of ≤35% pot with one pair (ahead 46% of the time), two pair (44%) and trips (60%), when such a bet needs only ~21% equity. Now, facing a single small river bet, any pair or better that uses a hole card calls. Facing a single bet of ≤60% pot, trips or better call when `board_value_floor` doesn't beat the hand.
+- **Two-paired board value floor** (from All_Out `best_bot`): `board_value_floor` returns full-house level (6) on boards with two pairs, blocking thin value bets and calls there.
+- Tested and rejected: trips/4-straight range reading (−35/match) and early maniac detection (+18/match, noise).
+- **Results** (fresh seeds not used for tuning, our bot as A):
+
+| Matchup | Previous version (`baa0a67`) | New version |
+|---|---|---|
+| Head-to-head vs previous version, Stage 1, 64 seeds | — | **+102 / match** |
+| Head-to-head vs previous version, Stage 2, 12 seeds | — | **+219 / match**, 8/12 wins |
+| vs All_Out `best_bot.py`, Stage 1, 32 seeds | +22 | **+155** |
+| vs All_Out `best_bot.py`, Stage 2, 12 seeds | +296, 7/12 wins | **+646, 10/12 wins** |
+| vs All_Out `bot.py` (pre-update), Stage 1, 32 seeds | +56 | **+250** |
+| vs `ryans_bot.py`, Stage 1, 32 seeds | +994 | **+1,101** |
+
+Stage 2 timing: about 12 s used per 75 s leg, zero notices.
+
 ---
 
 ## ⏱️ Benchmark & Performance

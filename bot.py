@@ -476,6 +476,8 @@ def board_value_floor(board_ints):
         return 4
     if max(ranks) >= 3:
         return 6
+    if sum(1 for r in ranks if r >= 2) >= 2:
+        return 6
     elif max(ranks) == 2 and max(suits) >= 3:
         return 3
     return 2
@@ -1474,6 +1476,18 @@ class PokerBot:
         # ====================================================================
         # DECISION MATRIX (Using Action-Conditioned EHS, MDF, and Pot Odds)
         # ====================================================================
+
+        # River minimum defence vs small / medium single bets: a bet of <= 35% pot needs only ~21%
+        # equity, and showdown analysis shows made hands that use a hole card win far more often.
+        if street == "river" and to_call > 0 and opp_raises_this_street == 1 and not any(
+            h.get("actor") == "me" and h.get("action") == "raise" and h.get("street") == "river" for h in history
+        ):
+            bet_frac = to_call / max(pot - to_call, 1)
+            uses_hole = made_rank > eval_fast(board_ints)
+            if uses_hole and hand_cat >= 1 and bet_frac <= 0.35:
+                return self.call_or_check(legal)
+            if uses_hole and hand_cat >= 3 and bet_frac <= 0.60 and hand_cat >= board_value_floor(board_ints):
+                return self.call_or_check(legal)
 
         # 1. MONSTER / NUTS (EHS >= 0.85)
         if ehs >= 0.85:

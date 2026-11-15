@@ -44,6 +44,8 @@ BOT_REGISTRY = {
     "PotOdds":          "example_bots/pot_odds_bot.py",
     "Trapper":          "example_bots/trapper_bot.py",
     "MixedStrategy":    "example_bots/mixed_strategy_bot.py",
+    "BestBotNew":       "example_bots/best_bot.py",
+    "ChampionBot":      "example_bots/champion_bot.py",
 }
 
 # Match settings
@@ -95,8 +97,8 @@ def run_match(bot_a_path: str, bot_b_path: str,
     # Parse final net scores.  Engine prints lines like:
     #   "A  bot_a.py  stack 237  net +37"
     #   "B  bot_b.py  stack 163  net -37"
-    nets_a = re.findall(r"^A\s+.*?net\s+([+-]?\d+)", output, re.MULTILINE)
-    nets_b = re.findall(r"^B\s+.*?net\s+([+-]?\d+)", output, re.MULTILINE)
+    nets_a = re.findall(r"^\s*A\s+.*?net\s+([+-]?\d+)", output, re.MULTILINE)
+    nets_b = re.findall(r"^\s*B\s+.*?net\s+([+-]?\d+)", output, re.MULTILINE)
 
     if nets_a and nets_b:
         return {"net_a": int(nets_a[-1]), "net_b": int(nets_b[-1]), "error": None}
